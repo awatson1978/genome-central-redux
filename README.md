@@ -54,3 +54,56 @@ meteor add symptomatic:data-importer
 cd ../..
 CAFILE=~/MITRE-chain.pem meteor run --settings configs/settings.moonshot.json 
 
+
+
+#### Configuration  
+
+The package allows you to load files in three different ways.  
+
+**Option 1.  Static File Loader**
+
+On the `/moonshot-patient-chart` route, the user is presented a button that says "Load Sample Patient".  Upon pressing this button, a Synthea generated sample patient is loaded into memory.  You can go into the browser console, and inspect the data loaded into memory, like so:
+
+```javascript
+// get the patient id
+Session.get('selectedPatientId')
+
+// get the FHIR Patient resource
+Session.get('selectedPatient')
+
+// get the FHIR Conditions
+Conditions.find().fetch()
+```
+
+**Option 2.  File Load User Interface**
+
+If you wish to import a file from the filesystem, you can use the open-source Symptomatic Data Importer package, available via the Atmosphere package.  This package is completely optional, but is convenient for working with Synthea files.  
+
+```bash
+meteor add symptomatic:data-importer
+```
+
+Once installed, the button on the Patient Chart page will be updated to say "Select Patient File", and will route you to the data importer page.  
+
+
+**Option 3.  SMART on FHIR Data Fetch**
+
+Lastly, you may wish to fetch a sample patient from a hospital sandbox, using the SMART on FHIR data protocol.  This is the most complicated approach, and requires configuring a settings file.  You will need to add a configuration object to the `Meteor.settings.public.smartOnFhir` array.  
+
+The SMART on FHIR configuration looks like the following:
+```json
+[{
+    "vendor": "SmartHealth IT",
+    "client_id": "smarthealthit",
+    "scope": "launch launch/patient Patient.Read Encounter.Read Procedure.Read Condition.Read Observation.Read offline_access",
+    "fhirServiceUrl": "https://launch.smarthealthit.org/v/r4/sim/WzMsIiIsIiIsIkFVVE8iLDAsMCwwLCIiLCIiLCIiLCIiLCIiLCIiLCIiLDAsMV0/fhir",
+    "redirect_uri": "http://localhost:3000/cms-home-page",
+    "iss": "https://launch.smarthealthit.org/v/r4/sim/WzMsIiIsIiIsIkFVVE8iLDAsMCwwLCIiLCIiLCIiLCIiLCIiLCIiLCIiLDAsMV0/fhir"
+}]
+```
+
+Once created, you will need to run Meteor with your custom settings file.  An example has been provided in the `configs` directory, and can be run like so:
+
+```bash
+meteor run --settings packages/q4-moonshot/configs/settings.moonshot.localhost.json  
+```

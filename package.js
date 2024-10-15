@@ -1,6 +1,6 @@
 Package.describe({
     name: 'mitre:patient-chart-starter',
-    version: '0.6.0',
+    version: '0.7.0',
     summary: 'Q4 Moonshot',
     git: 'https://gitlab.mitre.org/awatson/patient-chart-starter',
     documentation: 'README.md'

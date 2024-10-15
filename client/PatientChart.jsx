@@ -26,8 +26,57 @@ import { GPTTokens } from 'gpt-tokens';
 import { useLocation, useNavigate } from "react-router-dom";
 
 import PatientCard from './PatientCard';
+import SmartOnFhir, { fetchCapabilityStatement } from './SmartOnFhir';
 
 
+// //====================================================================================
+// // SMART on FHIR
+
+let firstSmartConfig = get(Meteor, 'settings.public.smartOnFhir[0]', []);
+
+function generateCodeVerifier() {
+  const array = new Uint32Array(56); // 56 random bytes -> 112 base64 characters
+  window.crypto.getRandomValues(array);
+  return btoa(String.fromCharCode.apply(null, array)).replace(/[\+/=]/g, '').substr(0, 128);
+}
+
+  // Function to generate code_challenge from code_verifier
+async function generateCodeChallenge(codeVerifier) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(codeVerifier);
+    const hash = await crypto.subtle.digest('SHA-256', data);
+    return uint8ToBase64(new Uint8Array(hash))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+}
+
+// Helper function to convert Uint8Array to base64 string
+function uint8ToBase64(uint8Array) {
+    let binary = '';
+    const len = uint8Array.byteLength;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(uint8Array[i]);
+    }
+    return btoa(binary);
+}
+
+
+async function verifyCodeChallenge(codeVerifier, expectedCodeChallenge) {
+
+  // Generate the code_challenge from the code_verifier
+  const generatedCodeChallenge = await generateCodeChallenge(codeVerifier);
+
+  console.log('Generated code_challenge:', generatedCodeChallenge);
+  console.log('Expected code_challenge:', expectedCodeChallenge);
+
+  // Compare the generated code_challenge with the expected one
+  if (generatedCodeChallenge === expectedCodeChallenge) {
+      console.log('Success: The code_verifier correctly generates the expected code_challenge.');
+  } else {
+      console.error('Failure: The code_verifier does NOT generate the expected code_challenge.');
+  }
+}
 
 //====================================================================================
 // Session Variables
@@ -129,48 +178,21 @@ Meteor.startup(async function(){
 function PatientChart(props){
   const navigate = useNavigate();
   const { mode, toggleTheme } = useTheme();
-
+  
   let searchParams = new URLSearchParams(window.location.search);
 
   let headerHeight = 84;
   if(get(Meteor, 'settings.public.defaults.prominantHeader')){
     headerHeight = 148;
   }  
-
-  let data = {
-    allergyIntolerances: [],
-    careTeams: [],
-    carePlans: [],
-    conditions: [],
-    consents: [],
-    devices: [],
-    encounters: [],
-    immunizations: [],
-    locations: [],
-    medications: [],
-    observations: [],
-    procedures: [],
-    selectedPatientId: '',
-    selectedPatient: null,
-    patients: [],
-    questionnaires: [],
-    questionnaireResponses: [],
-    basicQuery: {}
+  let isMobile = false
+  if(window.innerWidth < 920){
+      isMobile = true;
   }
 
-  data.selectedPatientId = useTracker(function(){
-    return Session.get('selectedPatientId');
-  }, []);
-  data.selectedPatient = useTracker(function(){
-      if(Session.get('selectedPatientId')){
-          return Patients.findOne({id: Session.get('selectedPatientId')});
-      } else if(get(Session.get('currentUser'), 'patientId')){
-          return Patients.findOne({id: get(Session.get('currentUser'), 'patientId')});
-      }   
-  }, []);
-  data.basicQuery = useTracker(function(){
-    return FhirUtilities.addPatientFilterToQuery(Session.get('selectedPatientId'));
-  }, []);
+
+  //----------------------------------------------------------------------
+  // State Variables
 
   let [allergyIntolerancesPage, setAllergyIntolerancesPage] = useState(0);
   let [careTeamsPage, setCareTeamsPage] = useState(0);
@@ -224,21 +246,55 @@ function PatientChart(props){
   let [clinicalSummaryTokens, setClinicalSummaryTokens] = useState(0);
 
 
-  let isMobile = false
-  if(window.innerWidth < 920){
-      isMobile = true;
+  //----------------------------------------------------------------------
+  // SMART on FHIR State Variables
+
+  import jwt from 'jsonwebtoken';
+  import moment from 'moment';
+
+  let [serverCapabilityStatement, setServerCapabilityStatement] = useState("");
+  let [wellKnownSmartConfig, setWellKnownSmartConfig] = useState("");
+  let [smartAccessToken, setSmartAccessToken] = useState("");
+  let [fhirPatient, setFhirPatient] = useState("");
+
+  //----------------------------------------------------------------------
+  // Data Trackers
+
+  let data = {
+    allergyIntolerances: [],
+    careTeams: [],
+    carePlans: [],
+    conditions: [],
+    consents: [],
+    devices: [],
+    encounters: [],
+    immunizations: [],
+    locations: [],
+    medications: [],
+    observations: [],
+    procedures: [],
+    selectedPatientId: '',
+    selectedPatient: null,
+    patients: [],
+    questionnaires: [],
+    questionnaireResponses: [],
+    basicQuery: {}
   }
 
-  function openLink(url){
-    console.log("openLink", url);
+  data.selectedPatientId = useTracker(function(){
+    return Session.get('selectedPatientId');
+  }, []);
+  data.selectedPatient = useTracker(function(){
+      if(Session.get('selectedPatientId')){
+          return Patients.findOne({id: Session.get('selectedPatientId')});
+      } else if(get(Session.get('currentUser'), 'patientId')){
+          return Patients.findOne({id: get(Session.get('currentUser'), 'patientId')});
+      }   
+  }, []);
+  data.basicQuery = useTracker(function(){
+    return FhirUtilities.addPatientFilterToQuery(Session.get('selectedPatientId'));
+  }, []);
 
-    if(typeof Packages["symptomatic/data-importer"] === "object"){
-      navigate(url, {replace: true});
-    } else {
-      // TODO:  load Daniel_Gaitan directly
-
-    }
-  }
 
   let selectedPatient = useTracker(function(){
     return Session.get('selectedPatient');
@@ -284,76 +340,17 @@ function PatientChart(props){
     console.log('PatientChart.useEffect()', editorText)
     // QuestionnaireResponses._collection.insert(form8500Response, {filter: false, validate: false});
 
-    gatherTextNormalForm();
+
+    // SmartOnFhir.fetchCapabilityStatement();
+    fetchCapabilityStatement();
 
     Session.set('QuestionnaireResponsesPage.onePageLayout', false);
   }, [])
 
 
-
-  //------------------------------------------------------------------------------------------------------
-
-  let basicChain; 
-  let narrativeSummaryChain;
-  let askQuestionChain;
-  let askMultipleChoiceQuestionChain;
-  let completeQuestionSentenceChain;
-
-
-  if(openAiApiKey){
-    
-    const chatModel = new ChatOpenAI({
-      modelName: "gpt-4",
-      toolChoice: "auto",
-      temperature: 1.05,
-      maxRetries: 10,
-      openAIApiKey: openAiApiKey, // In Node.js defaults to process.env.OPENAI_API_KEY
-      maxTokens: 1000
-    });
-  
-    let textNormalFormPrompt = ChatPromptTemplate.fromMessages([
-      ["system", "You are a helpful assistant. Given the following patient record in JSON format, please summarize in clinical text normal form.  Provide a narrative summary of the patient's health, no line breaks or lists.  Use neutral omniciant narrator tense; do not use third person."],
-      ["user", "{jsonInput}"],
-    ]);
-
-    let narrativeSummaryPrompt = ChatPromptTemplate.fromMessages([
-      ["system", "You are a helpful assistant. Given the following patient clinical statements, please summarize as a coherent narrative summary.  Remove duplications and extraneous information and codings; keep it human readable; no lists."],
-      ["user", "{jsonInput}"],
-    ]);
-
-    let askQuestionPrompt = ChatPromptTemplate.fromMessages([
-      ["system", globalPrompt],
-      ["user", "{jsonInput}"],
-    ]);
-
-    let completeQuestionSentencePrompt = ChatPromptTemplate.fromMessages([
-      ["system", "Please convert the following string fragment into a complete sentence.  Use third person.  Assume the form is for a patient, and the label is referring to the patient.  If the type of question is 'choice', please include the answer choices in the response."],
-      // ["system", "You are a helpful assistant who ensures that questions are written as complete sentences.  When text is sent to you, if it is a complete sentence, echo it back verbatim.  If a sentence fragment or label is provided, please convert it into a complete sentence and then return it. Use third person.  When unsure about the voice or tense or subject, assume that you are a clinician filling out the form on behalf of the patient."],
-      ["user", "{jsonInput}"],
-    ]);
-
-    let askMultipleChoiceQuestionPrompt = ChatPromptTemplate.fromMessages([
-      ["system", "You are a helpful assistant. Given the following patient record, question, and possible answers, please select any of the following multiple choice answers that are indicated by the patient medical history.  Please respond with a JSON object, with an 'answerChoice' field that contains an array of the chosen answer options, and an 'explanation' field that contains a text description of why you chose that answer.  Be detailed in your explanation.  When building the array of choices, include the entire valueCoding."],
-      ["user", "{jsonInput}"],
-    ]);
-
-
-    const outputParser = new StringOutputParser();
-  
-    basicChain = textNormalFormPrompt.pipe(chatModel).pipe(outputParser);
-
-    narrativeSummaryChain = narrativeSummaryPrompt.pipe(chatModel).pipe(outputParser);
-
-    askQuestionChain = askQuestionPrompt.pipe(chatModel).pipe(outputParser);
-    
-    askMultipleChoiceQuestionChain = askMultipleChoiceQuestionPrompt.pipe(chatModel).pipe(outputParser);
-
-    completeQuestionSentenceChain = completeQuestionSentencePrompt.pipe(chatModel).pipe(outputParser);
-  }
-  
   
   //------------------------------------------------------------------------------------------------------
-  
+  // Data Cursors
   
   if(AllergyIntolerances){
     data.allergyIntolerances = useTracker(function(){
@@ -426,7 +423,533 @@ function PatientChart(props){
           return QuestionnaireResponses.find(FhirUtilities.addPatientFilterToQuery(Session.get('selectedPatientId'))).fetch()
       }, [])   
   }
+
   //----------------------------------------------------------------------
+  // Functions
+
+  function openLink(url){
+    console.log("openLink", url);
+
+    if(typeof Package["symptomatic:data-importer"] === "object"){
+      navigate(url, {replace: true});
+    } else {
+      // TODO:  load Daniel_Gaitan directly      
+    }
+  }
+
+  async function fetchCapabilityStatement(){
+    console.log('fetchCapabilityStatement');
+
+    await fetch(get(Meteor, 'settings.public.smartOnFhir[0].fhirServiceUrl', '') + "/metadata?_format=json", {
+      method: 'GET',
+      headers: {
+        "Content-Type": "application/json",
+        "Epic-Client-ID": get(Meteor, 'settings.public.smartOnFhir[0].client_id', ''),
+      }
+    }).then(response => response.json())
+    .then(result => {
+      console.log('fetch.get /metadata result', result)
+      if(result){
+        setServerCapabilityStatement(result);
+        fetchWellKnownSmartConfig();
+      } 
+    }).catch((error) => {
+      console.error('fetch.get /metadata error', error)
+    });
+
+  }
+  async function fetchWellKnownSmartConfig(callback){
+    console.log('fetchWellKnownSmartConfig');
+
+    await fetch(get(Meteor, 'settings.public.smartOnFhir[0].fhirServiceUrl', '') + "/.well-known/smart-configuration", {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    }).then(response => response.json())
+    .then(async function(result){
+      console.log('fetch.get /.well-known/smart-configuration result', result)
+      setWellKnownSmartConfig(result);
+
+      exchangeCodeForAccessToken(result);
+
+    }).catch((error) => {
+      console.error('fetch.get /.well-known/smart-configuration error', error)
+    });
+  }
+  async function exchangeCodeForAccessToken(wellKnownSmartConfig){
+    console.info('exchangeCodeForAccessToken')
+    console.info('exchangeCodeForAccessToken.url', get(wellKnownSmartConfig, 'token_endpoint'))
+
+
+    // Retrieve from Local Storage
+    const codeVerifier = localStorage.getItem('pkce_code_verifier');
+
+    // // OR Retrieve from Session Storage
+    // const codeVerifier = sessionStorage.getItem('pkce_code_verifier');
+
+    
+    let payload = {
+      code: encodeURIComponent(searchParams.get('code')),
+      grant_type: encodeURIComponent('authorization_code'),
+      redirect_uri: encodeURIComponent(get(Meteor, 'settings.public.smartOnFhir[0].redirect_uri', '')),
+      client_id: encodeURIComponent(get(Meteor, 'settings.public.smartOnFhir[0].client_id', ''))
+      // scope: encodeURIComponent(get(firstSmartConfig, 'scope', 'openid profile fhirUser'))
+    }
+
+    if(codeVerifier){
+      payload.code_verifier = encodeURIComponent(codeVerifier)
+    }
+
+    console.info('exchangeCodeForAccessToken.code', searchParams.get('code'))
+    console.info('exchangeCodeForAccessToken.payload', payload)
+    
+    const decodedCode = jwt.decode(searchParams.get('code'));
+    console.info('exchangeCodeForAccessToken.decodedCode', decodedCode);
+
+    // Convert to human-readable dates
+    if(get(decodedCode, 'iat')){
+      const issuedAtDate = moment.unix(decodedCode.iat).format('YYYY-MM-DD HH:mm:ss');
+      console.log(`Issued At:  ${issuedAtDate}`);
+    }
+
+    const nowDate = moment().format('YYYY-MM-DD HH:mm:ss');
+    console.log(`Now:        ${nowDate}`);
+
+    if(get(decodedCode, 'exp')){
+      const expirationDate = moment.unix(decodedCode.exp).format('YYYY-MM-DD HH:mm:ss');
+      console.log(`Expiration: ${expirationDate}`);
+    }
+
+
+    // code_verifier
+    // 47f39e65a70db0e5a707f8dc2e58ee938b598c23617ebe3fcce657b77a2ed6b0
+  
+    
+    // code-challenge
+    // CUbiZl2t0ZPNYsclnnfFARcMuMUbQ0Qbsom-dUgz4EA
+    
+    // let stringEncodedData = "grant_type=authorization_code&code=" + searchParams.get('code') + '&redirect_uri=' + encodeURIComponent(get(Meteor, 'settings.public.smartOnFhir[0].redirect_uri', '')) + '&client_id=' + encodeURIComponent(get(Meteor, 'settings.public.smartOnFhir[0].client_id', '')) + '&scope=' + encodeURIComponent(get(firstSmartConfig, 'scope', 'openid profile fhirUser'))
+    let stringEncodedData = "grant_type=authorization_code&code=" + searchParams.get('code') + '&redirect_uri=' + encodeURIComponent(get(Meteor, 'settings.public.smartOnFhir[0].redirect_uri', '')) + '&client_id=' + encodeURIComponent(get(Meteor, 'settings.public.smartOnFhir[0].client_id', '')) + '&code_verifier=' + encodeURIComponent(codeVerifier) 
+    console.info('exchangeCodeForAccessToken.stringEncodedData', stringEncodedData);
+
+
+    // grant_type=authorization_code&code=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJ1cm46b2lkOjEuMi44NDAuMTE0MzUwLjEuMTMuMC4xLjcuMy42ODg4ODQuMTAwIiwiY2xpZW50X2lkIjoiZGI2ODNlZGYtOGM1Ny00MzIyLThlMmItZGZjMGM0YWM2MmY2IiwiZXBpYy5lY2kiOiJ1cm46ZXBpYzpPcGVuLkVwaWMtY3VycmVudCIsImVwaWMubWV0YWRhdGEiOiJfSGkteTFsQ051cVZhV3NZSEM2SU12UFI1aDEwZDdwV1hKUTZhR0YxbDdIcnotVVc1aDNRaU1va3pWQUJVVGdYN3NTbjF5dmtTb1ZqTTVNR3RPRTlIOEpXQkRCSFk0ZTQ2OEE4S2FpVFhaTnJhSHFGeFFQTF96Yk1md1p2NzJ2bSIsImVwaWMudG9rZW50eXBlIjoiY29kZSIsImV4cCI6MTcyNTExNTg4MywiaWF0IjoxNzI1MTE1NTgzLCJpc3MiOiJ1cm46b2lkOjEuMi44NDAuMTE0MzUwLjEuMTMuMC4xLjcuMy42ODg4ODQuMTAwIiwianRpIjoiOWY5ODg5ZTAtZWQ5NC00NjkxLWJlM2QtMTU1MzBjNGNkNzZiIiwibmJmIjoxNzI1MTE1NTgzLCJzdWIiOiJlYjRHaWE3RnlpanRQbVhrcnRqUnBQdzMifQ.VfyPMjE-9ekfgJiEUk6M5b0ChL7kDhZQfAePRgPbm_lkJPYtmMemGK_Or-YxTCa0to0OkEYj9WvObl4Nj0gicbNevEpgOh1lKrt0JhPeUINU6n28xYzR96g3HvY9YmC1L9vo10Qpza1qiHK_9TBU5B4UuRQSWLkT9skx8pvkAk-KrGpwKuh6bdcEFWcVHJ1lqqFJRPSJBo65XYODEZgn7GLNdYtzMKLooBMvypwmCkXDUD10HgooRScdOzvQYa1n5crnfrfVnSUxSH84-5EALL38MTBZGRZfgme8nrcsSDa_k31Ahvq3L9v2bmbQ0Tkz2TI8fQ-tv9qRpkx4xzJl9g&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fcms-home-page&client_id=db683edf-8c57-4322-8e2b-dfc0c4ac62f6&scope=openid%20profile%20fhirUser
+
+
+
+    // we don't want to generate failed authentication attempts from basic page renders
+    if(searchParams.get('code')){
+
+
+      // try {
+      //   const response = await fetch(get(wellKnownSmartConfig, 'token_endpoint'), {
+      //     method: 'POST',
+      //     body: stringEncodedData,
+      //     headers: {
+      //       'Content-Type': 'application/x-www-form-urlencoded'
+      //     },
+      //     agent: httpsAgent // Use httpAgent if your endpoint is HTTP
+      //   });
+        
+      //   const result = await response.json();
+      
+      //   if (response.ok) {
+      //     console.log('Token exchange successful:', result);
+      //     // Handle success
+      //   } else {
+      //     console.error('Token exchange failed:', result);
+      //     // Handle error
+      //   }
+      // } catch (error) {
+      //   console.error('Fetch error:', error);
+      // }
+      
+      // okay, we have a code, let's try to exchange it for an access token
+      await HTTP.post(get(wellKnownSmartConfig, 'token_endpoint'), {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        content: stringEncodedData
+        // content: new URLSearchParams(payload).toString()
+      }, function(error, result){
+        if(error){
+          console.error('HTTP.post /token error', error)
+        }
+        if(result){
+          console.log('HTTP.post /token result', result)
+          setSmartAccessToken(get(result, 'data'));
+  
+          fetchPatient(get(result, 'data.patient'), get(result, 'data.access_token'));
+        }
+      });
+    }
+  }
+  async function fetchPatient(patientId, accessToken){
+    console.log('fetchPatient')
+    console.log('fetchPatient.url', get(Meteor, 'settings.public.smartOnFhir[0].fhirServiceUrl', '') + "/Patient")
+    console.log('fetchPatient.url', accessToken)
+
+    await fetch(get(Meteor, 'settings.public.smartOnFhir[0].fhirServiceUrl', '') + "/Patient/" + patientId + "?_format=json", {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + accessToken
+      }
+    }).then(response => response.json())
+    .then(async function(result){
+      console.log('fetch.get /Patient result', result)
+      if(result){
+        if(typeof result === "object"){
+          setFhirPatient(result);
+  
+          fetchPatientData(result, accessToken)
+  
+          Session.set('selectedPatientId', get(result, 'id'));
+          Session.set('selectedPatient', result);
+  
+          if(!Patients.findOne({id: get(result, 'id')})){
+            await Patients._collection.insertAsync(result);     
+          }
+        } else if (typeof result === "string") {
+          setFhirPatient(JSON.parse(result));
+  
+          fetchPatientData(JSON.parse(result), accessToken)
+  
+          Session.set('selectedPatientId', get(JSON.parse(result), 'id'));
+          Session.set('selectedPatient', JSON.parse(result));
+  
+          if(!Patients.findOne({id: get(JSON.parse(result), 'id')})){
+            await Patients._collection.insertAsync(JSON.parse(result));     
+            setLastUpdated(new Date());
+          }
+        }
+      } else {
+        console.log('no result return')
+      }
+      
+    }).catch((error) => {
+      console.error('fetch.get /Patient error', error)
+    });
+
+  }
+  async function fetchPatientData(fhirPatient, accessToken) {
+    console.log("---------------------------------------------------------------------")
+    console.log("SMART ON FHIR");
+    console.log("fhirPatient", fhirPatient);
+  
+    if(fhirPatient){
+      //try {
+  
+      var httpHeaders = { headers: {
+        'Accept': "application/json,application/fhir+json",
+        "Authorization": "Bearer " + accessToken
+      }}
+
+      console.log('----------------------------  Condition  -------------------------------')
+
+      const conditionQuery = new URLSearchParams();
+      conditionQuery.set("patient", get(fhirPatient, 'id'));
+      console.debug('Condition Query', conditionQuery);
+  
+      // without leading slash seems to work with Cerner, but not with Epic (?)
+      let conditionUrl = '/Condition?' + conditionQuery.toString()
+      console.debug('conditionUrl', conditionUrl);
+  
+      let conditionUrlAssembled = get(Meteor, 'settings.public.smartOnFhir[0].fhirServiceUrl', '') + "/Condition?patient=" + get(fhirPatient, 'id');
+      console.info('FaaPage.conditionUrlAssembled:    ', conditionUrlAssembled);
+  
+      if(conditionUrlAssembled){        
+
+        console.debug('FaaPage.conditionUrlAssembled.httpHeaders:    ', httpHeaders);
+        
+        await fetch(conditionUrlAssembled, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': "application/json,application/fhir+json",
+            "Authorization": "Bearer " + accessToken    
+          }
+        }).then(response => response.json())
+        .then(async function(result){
+          let parsedConditionBundle;
+          
+          if(typeof result === "string"){
+            parsedConditionBundle = JSON.parse(result);
+          } else if (typeof result === "object"){
+            parsedConditionBundle = result;
+
+            console.info('CmsPage.parsedConditionBundle', parsedConditionBundle);       
+          
+            if(parsedConditionBundle.resourceType === "Bundle"){
+              parsedConditionBundle.entry.forEach(async function(entry){
+                if(!Conditions.findOne({id: get(entry, 'resource.id')}) && get(entry, 'resource.resourceType') === 'Condition'){
+                  await Conditions._collection.upsertAsync({id: get(entry, 'resource.id ')}, {$set: get(entry, 'resource')}, {validate: false, filter: false});     
+                  setLastUpdated(new Date());
+                }
+              });
+            }  
+          }
+        }).catch((error) => {
+          console.error('fetch.get().conditionUrlAssembled.error', error);
+        });
+      }
+        
+  
+      console.log('----------------------------  Encounter  -------------------------------')
+
+      const encounterQuery = new URLSearchParams();
+      encounterQuery.set("patient", get(fhirPatient, 'id'));
+      // console.log('Encounter Query', encounterQuery);
+
+      // without leading slash seems to work with Cerner, but not with Epic (?)
+      // let encounterUrl = '/Encounter?' + encounterQuery.toString();
+      // console.log('encounterUrl', encounterUrl);
+  
+      let encounterUrlAssembled = get(Meteor, 'settings.public.smartOnFhir[0].fhirServiceUrl', '') + "/Encounter?patient=" + get(fhirPatient, 'id');
+      console.info('FaaPage.encounterUrlAssembled:    ', encounterUrlAssembled);
+  
+      if(encounterUrlAssembled){        
+
+        console.debug('FaaPage.encounterUrlAssembled.httpHeaders:    ', httpHeaders);
+        
+        await fetch(encounterUrlAssembled, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': "application/json,application/fhir+json",
+            "Authorization": "Bearer " + accessToken    
+          }
+        }).then(response => response.json())
+        .then(async function(result){
+          let parsedEncounterBundle;
+          if(typeof result === "string"){
+            parsedEncounterBundle = JSON.parse(result);
+          } else if (typeof result === "object"){
+            parsedEncounterBundle = result;
+
+            console.info('CmsPage.parsedEncounterBundle', parsedEncounterBundle);       
+          
+            if(parsedEncounterBundle.resourceType === "Bundle"){
+              parsedEncounterBundle.entry.forEach(async function(entry){
+                if(!Encounters.findOne({id: get(entry, 'resource.id')}) && get(entry, 'resource.resourceType') === 'Encounter'){
+                  await Encounters._collection.upsertAsync({id: get(entry, 'resource.id ')}, {$set: get(entry, 'resource')}, {validate: false, filter: false});     
+                  setLastUpdated(new Date());
+                }
+              });
+            }  
+          }          
+        }).catch((error) => {
+          console.error('fetch.get().encounterUrlAssembled.error', error)
+        });
+      }
+
+        
+  
+  
+      console.log('----------------------------  Immunization  -------------------------------')
+        
+      const immunizationQuery = new URLSearchParams();
+      immunizationQuery.set("patient", get(fhirPatient, 'id'));
+      // console.log('Immunization Query', immunizationQuery);
+  
+      // without leading slash seems to work with Cerner, but not with Epic (?)
+      let immunizationUrl = '/Immunization?' + immunizationQuery
+      // console.log('immunizationUrl', immunizationUrl);
+  
+      let immunizationUrlAssembled = get(Meteor, 'settings.public.smartOnFhir[0].fhirServiceUrl', '') + "/Immunization?patient=" + get(fhirPatient, 'id');
+      console.info('FaaPage.immunizationUrlAssembled:    ', immunizationUrlAssembled);
+  
+      if(immunizationUrlAssembled){        
+
+        console.debug('FaaPage.immunizationUrlAssembled.httpHeaders:    ', httpHeaders);
+        
+        await fetch(immunizationUrlAssembled, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': "application/json,application/fhir+json",
+            "Authorization": "Bearer " + accessToken    
+          }
+        }).then(response => response.json())
+        .then(async function(result){
+
+          let parsedImmunizationBundle;
+          if(typeof result === "string"){
+            parsedImmunizationBundle = JSON.parse(result);
+          } else if (typeof result === "object"){
+            parsedImmunizationBundle = result;
+
+            console.info('FaaPage.parsedImmunizationBundle', parsedImmunizationBundle);       
+          
+            if(parsedImmunizationBundle.resourceType === "Bundle"){
+              parsedImmunizationBundle.entry.forEach(async function(entry){
+                if(!Immunizations.findOne({id: get(entry, 'resource.id')}) && get(entry, 'resource.resourceType') === 'Immunization'){
+                  await Immunizations._collection.upsertAsync({id: get(entry, 'resource.id ')}, {$set: get(entry, 'resource')}, {validate: false, filter: false});     
+                  setLastUpdated(new Date());
+                }
+              });
+            }
+          }          
+        }).catch((error) => {
+          console.error('fetch.get().encounterUrlAssembled.error', error)
+        });
+      }
+
+
+          
+      console.log('----------------------------  MedicationRequest  -------------------------------')
+
+      const medicationRequestQuery = new URLSearchParams();
+      medicationRequestQuery.set("patient", get(fhirPatient, 'id'));
+      // console.log('MedicationRequest Query', medicationRequestQuery);
+
+      // without leading slash seems to work with Cerner, but not with Epic (?)
+      let medicationRequestUrl = '/MedicationRequest?' + medicationRequestQuery
+      // console.log('medicationRequestUrl', medicationRequestUrl);
+  
+
+      let medicationRequestUrlAssembled = get(Meteor, 'settings.public.smartOnFhir[0].fhirServiceUrl', '') + "/MedicationRequest?patient=" + get(fhirPatient, 'id');
+      console.info('FaaPage.medicationRequestUrlAssembled:    ', medicationRequestUrlAssembled);
+  
+      if(medicationRequestUrlAssembled){        
+
+        console.debug('FaaPage.medicationRequestUrlAssembled.httpHeaders:    ', httpHeaders); 
+        
+        await fetch(medicationRequestUrlAssembled, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': "application/json,application/fhir+json",
+            "Authorization": "Bearer " + accessToken    
+          }
+        }).then(response => response.json())
+        .then(async function(result){
+          let parsedMedicationRequestBundle;
+          if(typeof result === "string"){
+            parsedMedicationRequestBundle = JSON.parse(result);
+          } else if (typeof result === "object"){
+            parsedMedicationRequestBundle = result;
+
+            console.info('FaaPage.parsedMedicationRequestBundle', parsedMedicationRequestBundle);       
+          
+            if(parsedMedicationRequestBundle.resourceType === "Bundle"){
+              parsedMedicationRequestBundle.entry.forEach(async function(entry){
+                if(!MedicationRequests.findOne({id: get(entry, 'resource.id')}) && get(entry, 'resource.resourceType') === 'MedicationRequest'){
+                  await MedicationRequests._collection.upsertAsync({id: get(entry, 'resource.id ')}, {$set: get(entry, 'resource')}, {validate: false, filter: false});     
+                  setLastUpdated(new Date());
+                }
+              });
+            }
+          }          
+        }).catch((error) => {
+          console.error('fetch.get().medicationRequestUrlAssembled.error', error)
+        });
+
+      }
+
+          
+        console.log('----------------------------  Observation  -------------------------------')
+
+  
+          const observationQuery = new URLSearchParams();
+  
+          observationQuery.set("patient", get(fhirPatient, 'id'));
+          observationQuery.set("category", "vital-signs");    
+  
+          // console.log('Vital Signs Query', observationQuery);
+      
+          // without leading slash seems to work with Cerner, but not with Epic (?)
+          let vitalSignsUrl = '/Observation?' + observationQuery.toString();
+          // console.log('vitalSignsUrl', vitalSignsUrl);
+  
+          // client.request(vitalSignsUrl, { pageLimit: 0, flat: true }).then(observations => {
+          //   if(observations){
+          //     // console.log('PatientAutoDashboard.observations.vital-signs', observations)
+          //     observations.forEach(observation => {
+          //       Observations._collection.upsert({id: observation.id}, {$set: observation}, {validate: false, filter: false});
+          //     });
+          //   }
+          // });
+  
+          observationQuery.delete("category");    
+          observationQuery.set("category", "laboratory");    
+  
+          // console.log('Vital Signs Query', observationQuery);
+      
+          // without leading slash seems to work with Cerner, but not with Epic (?)
+          let laboratoryUrl = '/Observation?' + observationQuery.toString();
+          // console.log('laboratoryUrl', laboratoryUrl);
+  
+          // client.request(laboratoryUrl, { pageLimit: 0, flat: true }).then(observations => {
+          //   if(observations){
+          //     // console.log('PatientAutoDashboard.observations.laboratory', observations)
+          //     observations.forEach(observation => {
+          //       Observations._collection.upsert({id: observation.id}, {$set: observation}, {validate: false, filter: false});
+          //     });
+          //   }
+          // });
+        
+  
+          console.log('----------------------------  Procedure  -------------------------------')
+
+        
+          const procedureQuery = new URLSearchParams();
+          procedureQuery.set("patient", get(fhirPatient, 'id'));
+          // console.log('Procedure Query', procedureQuery);
+  
+          // without leading slash seems to work with Cerner, but not with Epic (?)
+          let procedureUrl = '/Procedure?' + procedureQuery
+          // console.log('procedureUrl', procedureUrl);
+  
+
+          let procedureUrlAssembled = get(Meteor, 'settings.public.smartOnFhir[0].fhirServiceUrl', '') + "/Procedure?patient=" + get(fhirPatient, 'id');
+          console.info('FaaPage.procedureUrlAssembled:    ', procedureUrlAssembled);
+      
+          if(procedureUrlAssembled){        
+    
+            console.debug('FaaPage.procedureUrlAssembled.httpHeaders:    ', httpHeaders);
+            
+            await fetch(procedureUrlAssembled, {
+              method: 'GET',
+              headers: {
+                'Content-Type': 'application/json',
+                'Accept': "application/json,application/fhir+json",
+                "Authorization": "Bearer " + accessToken    
+              }
+            }).then(response => response.json())
+            .then(async function(result){
+              let parsedProcedureBundle;
+              if(typeof result === "string"){
+                parsedProcedureBundle = JSON.parse(result);
+              } else if (typeof result === "object"){
+                parsedProcedureBundle = result;
+
+                console.info('FaaPage.parsedProcedureBundle', parsedProcedureBundle);       
+              
+                if(parsedProcedureBundle.resourceType === "Bundle"){
+                  parsedProcedureBundle.entry.forEach(async function(entry){
+                    if(!Procedures.findOne({id: get(entry, 'resource.id')}) && get(entry, 'resource.resourceType') === 'Procedure'){
+                      await Procedures._collection.upsertAsync({id: get(entry, 'resource.id ')}, {$set: get(entry, 'resource')}, {validate: false, filter: false});     
+                      setLastUpdated(new Date());
+                    }
+                  });
+                }  
+              }              
+            }).catch((error) => {
+              console.error('fetch.get().procedureUrlAssembled.error', error)
+            });
+          }
+
+      // } catch (error) {
+      //     alert("We had an error fetching data.", error)
+      // }
+    }
+  }
+
+
+  //----------------------------------------------------------------------
+  // Cards
 
   let patientDemographicsContent = [];
   if(typeof data.selectedPatient === "object"){
@@ -937,526 +1460,10 @@ function PatientChart(props){
   // Helper Functions
 
 
-  function onEditorChange(newValue){
-    console.log('onEditorChange', newValue)
-    setEditorText(newValue)
-
-    Session.set('textNormalForm', newValue);
-  }
-
-  function handleChangePipeline(event){
-    setSelectedPipeline(event.target.value);    
-  }
-
-  function gatherTextNormalForm(){
-    let editorText = "";
-
-    if(includeAllergyIntolerances){
-      data.allergyIntolerances.forEach(function(allergy){
-        if(get(allergy, 'text.div')){
-          editorText = editorText + get(allergy, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(allergy) + "\n\n";
-        }
-      }) 
-    }
-    if(includeCareTeams){
-      data.careTeams.forEach(function(careTeam){
-        if(get(careTeam, 'text.div')){
-          editorText = editorText + get(careTeam, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(careTeam) + "\n\n";
-        }
-      }) 
-    }
-    if(includeCarePlans){
-      data.carePlans.forEach(function(carePlan){
-        if(get(carePlan, 'text.div')){
-          editorText = editorText + get(carePlan, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(carePlan) + "\n\n";
-        }
-      }) 
-    }
-    if(includeConditions){      
-      data.conditions.forEach(function(condition){
-        if(get(condition, 'text.div')){
-          editorText = editorText + get(condition, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(condition) + "\n\n";
-        }
-      }) 
-    }
-    if(includeConsents){
-      data.consents.forEach(function(consent){
-        if(get(consent, 'text.div')){
-          editorText = editorText + get(consent, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(consent) + "\n\n";
-        }
-      }) 
-    }
-    if(includeDevices){
-      data.devices.forEach(function(device){
-        if(get(device, 'text.div')){
-          editorText = editorText + get(device, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(device) + "\n\n";
-        }
-      }) 
-    }
-    if(includeEncounters){
-      data.encounters.forEach(function(encounter){
-        if(get(encounter, 'text.div')){
-          editorText = editorText + get(encounter, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(encounter) + "\n\n";
-        }
-      }) 
-    }
-    if(includeImmunizations){
-      data.immunizations.forEach(function(immunization){
-        if(get(immunization, 'text.div')){
-          editorText = editorText + get(immunization, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(immunization) + "\n\n";
-        }
-      }) 
-    }
-    if(includeLocations){
-      data.locations.forEach(function(location){
-        if(get(location, 'text.div')){
-          editorText = editorText + get(location, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(location) + "\n\n";
-        }
-      }) 
-    }
-    if(includeMedications){
-      data.medications.forEach(function(medication){
-        if(get(medication, 'text.div')){
-          editorText = editorText + get(medication, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(medication) + "\n\n";
-        }
-      }) 
-    }
-    if(includeObservations){
-      data.observations.forEach(function(observation){
-        if(get(observation, 'text.div')){
-          editorText = editorText + get(observation, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(observation) + "\n\n";
-        }
-      }) 
-    }
-    if(includeProcedures){
-      data.procedures.forEach(function(procedure){
-        if(get(procedure, 'text.div')){
-          editorText = editorText + get(procedure, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(procedure) + "\n\n";
-        }
-      }) 
-    }
-    if(includePatients){
-      data.patients.forEach(function(patient){
-        if(get(patient, 'text.div')){
-          editorText = editorText + get(patient, 'text.div') + "\n\n";
-        } else {
-          editorText = editorText + JSON.stringify(patient) + "\n\n";
-        }
-      }) 
-    }
-    // if(includeQuestionnaires){
-    //   data.questionnaires.forEach(function(questionnaire){
-    //     if(get(questionnaire, 'text.div')){
-    //       editorText = editorText + get(questionnaire, 'text.div') + "\n\n";
-    //     } else {
-    //       editorText = editorText + JSON.stringify(questionnaire) + "\n\n";
-    //     }
-    //   })
-    // }
-    // if(includeQuestionnaireResponses){
-    //   data.questionnaireResponses.forEach(function(questionnaireResponse){
-    //     if(get(questionnaireResponse, 'text.div')){
-    //       editorText = editorText + get(questionnaireResponse, 'text.div') + "\n\n";
-    //     } else {
-    //       editorText = editorText + JSON.stringify(questionnaireResponse) + "\n\n";
-    //     }
-
-    //   }) 
-    // }
-    
-    setTextNormalForm(editorText);
-
-    Session.set('textNormalForm', editorText)
-  }
-
-  function selectMedicalHistory(){
-    console.log('selectMedicalHistory')
-
-    let medicalHistory = {
-      resourceType: "Bundle",
-      type: "collection",
-      entry: []
-    }
-
-    let conditions = Conditions.find().map(function(condition){
-      delete condition._id;
-      let entry = {
-        resource: condition
-      }
-      return entry;
-    });
-
-    let procedures = Procedures.find().map(function(condition){
-      delete condition._id;
-      let entry = {
-        resource: condition
-      }
-      return entry;
-    });
-    let medications = Medications.find().map(function(condition){
-      delete condition._id;
-      let entry = {
-        resource: condition
-      }
-      return entry;
-    });
-    let patients = Patients.find().map(function(condition){
-      delete condition._id;
-      let entry = {
-        resource: condition
-      }
-      return entry;
-    });
-
-    console.log('conditions.length', conditions.length)
-    console.log('procedures.length', procedures.length)
-    console.log('medications.length', medications.length)
-    console.log('patients.length', patients.length)
-
-    medicalHistory.entry = concat(medicalHistory.entry, patients);
-    medicalHistory.entry = concat(medicalHistory.entry, conditions);
-    medicalHistory.entry = concat(medicalHistory.entry, procedures);
-    medicalHistory.entry = concat(medicalHistory.entry, medications);
-    
-    // kludgy, but it gets the job done
-
-    console.log('medicalHistory', medicalHistory)
-    console.log('medicalHistory.entry.length', medicalHistory.entry.length)
-    Session.set('exportBuffer', medicalHistory);
-  }
-  
-  function handleChangeDestination(event, value){
-    console.log('handleChangeDestination', event.target.value)
-    setRelayUrl(event.target.value);
-    Session.set('relayUrl', event.target.value);
-  }
-  function handleCreateAndSaveIps(){
-    console.log("Creating and saving the IPS document to Compositions collection....");
-
-    setSummaryWordWrap(true);
-
-    let newComposition = {
-      resourceType: "Composition",
-      type: {
-        coding: [
-          {
-            system: "http://loinc.org",
-            code: "11506-3",
-            display: "Patient Summary"
-          }
-        ]
-      },
-      title: "International Patient Summary",
-      status: "final",
-      subject: {
-        reference: "Patient/" + Session.get('selectedPatientId')
-      },
-      date: new Date(),
-      text: {
-        status: "generated",
-        div: textNormalForm
-      }
-    }
-
-    let existingIsp = Compositions.findOne({title: "International Patient Summary"});
-    if(existingIsp){
-      Compositions._collection.update({_id: existingIsp._id}, {$set: {"text.div": textNormalForm}}, function(error, result){
-        if(error){
-          console.error('error', error)
-        }
-        if(result){
-          console.log('result', result)
-        }
-      });
-    } else {
-      Compositions._collection.insert(newComposition, function(error, result){
-        if(error){
-          console.error('error', error)
-        }
-        if(result){
-          console.log('result', result)
-        }
-      });
-    }
-  }
-
-  function handleClearTextSummary(){
-    setTextNormalForm("");
-  }
-  function handleToggleWrap(){
-    setSummaryWordWrap(!summaryWordWrap);
-  }
-  function createClinicalSummary(){
-    console.log('Creating clinical summary....');
-
-    let textToSend = "";
-
-    if(typeof textNormalForm === "string"){
-      textToSend = textNormalForm;
-    } else if(typeof textNormalForm === "object"){
-      textToSend = JSON.stringify(textNormalForm);
-    }
-
-    narrativeSummaryChain.invoke({
-      jsonInput: textToSend,
-    }).then((output) => {
-      console.log(output);
-      // setPatientNarrative(output);
-      setSummaryWordWrap(true);
-      setTextNormalForm(output);
-
-      Session.set('textNormalForm', output);
-    });
-  }
-
-  function handleParseAllCollectionOfResources(){
-    console.log("handleParseAllCollectionOfResources")
-    // await handleParseCollectionOfResources(AllergyIntolerances.find().fetch());
-    
-    if(includeCareTeams){
-      handleParseCollectionOfResources(CareTeams.find().fetch());
-    }
-    if(includeCarePlans){
-      handleParseCollectionOfResources(CarePlans.find().fetch());
-    }
-    if(includeConditions || includeProcedures){
-      handleParseCollectionOfResources(Conditions.find().fetch());
-    }
-    // handleParseCollectionOfResources(Consents.find().fetch());
-    // handleParseCollectionOfResources(Devices.find().fetch());    
-    if(includeEncounters){
-      handleParseCollectionOfResources(Encounters.find().fetch());
-    }
-    if(includeImmunizations){
-      handleParseCollectionOfResources(Immunizations.find().fetch());
-    }
-    // handleParseCollectionOfResources(Locations.find().fetch());
-    // handleParseCollectionOfResources(Medications.find().fetch());
-    // handleParseCollectionOfResources(Observations.find().fetch());
-    if(includeProcedures){
-      handleParseCollectionOfResources(Procedures.find().fetch());
-    }
-    // if(includePastIllnessHistory){
-    //   handleParseCollectionOfResources(Conditions.find().fetch());
-    // }
-
-    // handleParseCollectionOfResources(Patients.find().fetch());
-    // handleParseCollectionOfResources(Questionnaires.find().fetch());
-    // handleParseCollectionOfResources(QuestionnaireResponses.find().fetch());
-
-  }
-  async function handleParseCollectionOfResources(arrayOfResources){
-    console.log('handleParseCollectionOfResources', arrayOfResources);
-
-    switch (selectedPipeline) {
-      case 0:
-        initPythonPipeline(arrayOfResources);
-        break;
-      case 1:
-        initLangchainPipeline(arrayOfResources);
-        break;      
-      default:
-        break;
-    } 
-  }
-  function handleGatherResourceDescriptions(){
-
-    console.log("Gathering resource descriptions...")
-
-    console.log('includeAllergyIntolerances    ' + includeAllergyIntolerances)
-    console.log('includeCareTeams              ' + includeCareTeams)
-    console.log('includeCarePlans              ' + includeCarePlans)
-    console.log('includeConditions             ' + includeConditions)
-    console.log('includeConsents               ' + includeConsents)
-    console.log('includeDevices                ' + includeDevices)
-    console.log('includeEncounters             ' + includeEncounters)
-    console.log('includeImmunizations          ' + includeImmunizations)
-    console.log('includeLocations              ' + includeLocations)
-    console.log('includeMedications            ' + includeMedications)
-    console.log('includeObservations           ' + includeObservations)
-    console.log('includeProcedures             ' + includeProcedures)
-    console.log('includePatients               ' + includePatients)
-    console.log('includeQuestionnaires         ' + includeQuestionnaires)
-    console.log('includeQuestionnaireResponses ' + includeQuestionnaireResponses)
 
 
-    gatherTextNormalForm();
-  }
-  async function initLangchainPipeline(arrayOfResources){
-    console.log('Initializing Langchain pipeline', arrayOfResources);
-    // console.log('Received data type: ' + typeof arrayOfResources);
-    console.log('Received data is Array: ' + Array.isArray(arrayOfResources));
 
-    if(openAiApiKey === ""){
-      setShowApiError(true);
-      console.log('No API key provided.')
-      
-      Meteor.call('fetchOpenAiApiKey', function(error, result){
-        if(error){
-          console.error('error', error)
-        }
-        if(result){
-          console.log('result', result)
-          setOpenAiApiKey(result);
-        }
-      });
-    } else {
-      if(Array.isArray(arrayOfResources)){
-        console.log('arrayOfResources.length (starting)', arrayOfResources.length)        
-  
-        parseFirstItem(arrayOfResources);
-      }
-    }
-  }
-  async function initPythonPipeline(arrayOfResources){
 
-    let ndjsonString = arrayOfResources.map(function(resource){
-      return JSON.stringify(resource) + "\n";
-    }).join('');
-
-    console.log('Initiating Python pipeline', ndjsonString);
-    console.log("Relay URL: " + JSON.stringify(relayUrl))
-    
-    Meteor.call('proxyToString', relayUrl, ndjsonString, function(error, result){
-      if(error){
-        console.error('error', error)
-      }
-      if(result){
-        console.log('result', result)
-
-        if(get(result, 'data.text')){
-          Session.set('textNormalForm', result.data.text);
-        } else if(get(result, 'data.text.div')){
-          Session.set('textNormalForm', result.data.text.div);
-        }
-      }
-    }) 
-  }
-
-  async function parseFirstItem(arrayOfResources){
-    console.log('arrayOfResources', arrayOfResources);
-
-    let pulledRecords = pullAt(arrayOfResources, 0);
-    console.log('pulledRecords', pulledRecords)
-    console.log('pulledRecords.typeof', typeof pulledRecords)
-    console.log('pulledRecords.isArray', Array.isArray(pulledRecords))
-
-    console.log('pulledRecords[0]', pulledRecords[0])
-    console.log('pulledRecords[0].typeof', typeof pulledRecords[0])
-    
-    console.log('arrayOfResources new length     ', arrayOfResources.length);
-    // setDocs(arrayOfResources);
-
-    if(pulledRecords[0]){
-      let updatedRecord = pulledRecords[0];
-      setTimeout(async function(){
-        // let parsedpulledRecords[0];
-        // if(typeof pulledRecords[0] == "string"){
-        //   parsedpulledRecords[0] = JSON.parse(pulledRecords[0]);
-        // } else if (typeof pulledRecords[0] == "object"){
-        //   parsedpulledRecords[0] = pulledRecords[0];
-        // }
-
-        let textToSend = "";
-        if(typeof updatedRecord === "string"){
-          textToSend = updatedRecord;
-        } else if(typeof updatedRecord === "object"){
-          textToSend = JSON.stringify(updatedRecord);
-        }
-
-        console.log('textToSend', textToSend)
-  
-        let textNormalForm = "";
-
-        textNormalForm = await basicChain.invoke({
-          jsonInput: textToSend
-        });
-
-        // are we using this
-        // looks like sample API code
-        // 
-        // try {
-        //   // Your LangChain API call here
-        //   textNormalForm = await basicChain.invoke({
-        //     jsonInput: textToSend
-        //   });
-        // } catch (error) {
-        //   if (error.isAxiosError && error.response && error.response.status) {
-        //     console.error(`API request failed with status code ${error.response.status}`);
-        //     // Handle the error based on the status code or error message
-        //   } else {
-        //     // This is not an axios error or the response status is not available
-        //     console.error(error);
-        //   }
-        // }
-
-        console.log('textNormalForm', textNormalForm);
-        console.log('textNormalForm.typeof', typeof textNormalForm);
-    
-        if(textNormalForm){
-          set(updatedRecord, 'text.div', textNormalForm)
-        }
-        console.log('updatedRecord', updatedRecord);
-
-        let collectionName = FhirUtilities.pluralizeResourceName(get(updatedRecord, 'resourceType'));
-        console.log('collectionName', collectionName)
-        console.log('collectionName.find().count()', window[collectionName].find().count())
-  
-        if(window[collectionName]){
-          console.log('updating', collectionName)
-          window[collectionName]._collection.update({_id: get(updatedRecord, '_id')}, {$set: updatedRecord}, {filter: false, validate: false});
-        }
-          
-        parseFirstItem(arrayOfResources); 
-      }, 1000);  
-    } else {
-      console.log('No more records.')
-    }
-
-  }
-
-  function handleGatherClinicalStatements(){
-    console.log('handleGatherClinicalStatements', llfFriendlyNdjsonString);
-    let llfFriendlyNdjsonArray = split(llfFriendlyNdjsonString, '\n');
-    let clinicalStatements = "";
-
-    split(llfFriendlyNdjsonString, '\n').forEach(function(doc){
-      // console.log('doc', doc)
-      if(doc){
-        let parsedDoc = JSON.parse(doc);
-        console.log('narrative', get(parsedDoc, 'text.div'))
-  
-        clinicalStatements = clinicalStatements + get(parsedDoc, 'text.div') + '\n\n';
-        setTextNormalForm(clinicalStatements)  
-
-        Session.set('textNormalForm', clinicalStatements);
-      }
-    });
-  }
 
   //----------------------------------------------------------------------
   // Page Styling and Layout
@@ -1494,39 +1501,7 @@ function PatientChart(props){
   } else {
     console.log('WARNING:  No interfaces defined!')
   }
-  let relaySelection;
-  if(selectedPipeline == 0){    
-    relaySelection = <Select value={ relayUrl} onChange={ handleChangeDestination } fullWidth style={{marginBottom: '20px'}}>
-      { relayOptions }
-    </Select>
-  } else {
-    // cardWidth = 3;
-    
-    // preprocessElements = <Grid item md={cardWidth}>
-    //   <Card>
-    //     <CardHeader title="Preprocessed NDJSON"></CardHeader>
-    //     <CardContent>
-    //       <AceEditor
-    //         mode="text"
-    //         theme="github"
-    //         wrapEnabled={false}
-    //         // onChange={onUpdateLlmFriendlyNdjsonString}
-    //         name="synthesisEditor"
-    //         editorProps={{ $blockScrolling: true }}
-    //         value={typeof llfFriendlyNdjsonString === "string" ? llfFriendlyNdjsonString : JSON.stringify(llfFriendlyNdjsonString, null, 2)}
-    //         style={{width: '100%', position: 'relative', height: '600px', minHeight: '200px', backgroundColor: '#f5f5f5', borderColor: '#ccc', borderRadius: '4px', lineHeight: '16px', marginTop: '20px'}}        
-    //       /> 
-    //       <br />
-    //       <br />
-    //       <Button fullWidth variant="contained" color="primary" onClick={handleGatherClinicalStatements} disabled={openAiApiKey ? false : true}>
-    //         Translate to Text
-    //       </Button>
-        
-    //     </CardContent>
-    //   </Card>      
-    //   <br/>
-    // </Grid>
-  }
+  
 
 
   //----------------------------------------------------------------------
