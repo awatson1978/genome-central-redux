@@ -5,7 +5,8 @@ Package.describe({
     git: 'https://github.com/awatson/genome-central-redux',
     documentation: 'README.md'
 });
-  
+
+
 Package.onUse(function(api) {
     api.versionsFrom('3.0');
     
@@ -17,7 +18,6 @@ Package.onUse(function(api) {
     api.use('mongo');    
     api.use('http');    
     
-
     api.addFiles('lib/Helpers.js', 'client');
 
     api.addFiles('lib/collections.js');
