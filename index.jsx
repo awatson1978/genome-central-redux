@@ -1,28 +1,30 @@
 import React from 'react';
 
-import PatientChart from './client/PatientChart';
+// import GenomeChart from './client/GenomeChart';
+import IdeogramPage from './client/IdeogramPage';
+
 
 import { 
-  PatientChartButtons
+  GenomeChartButtons
 } from './client/FooterButtons';
 
-let FooterButtons = [{
-  pathname: '/moonshot-patient-chart',
-  element: <PatientChartButtons />
-}];
+// let FooterButtons = [{
+//   pathname: '/patient-chart',
+//   element: <GenomeChartButtons />
+// }];
 
 var DynamicRoutes = [{
-  'name': 'Patient Chart',
-  'path': '/moonshot-patient-chart',
-  'element': <PatientChart />
+  'name': 'Ideogram Page',
+  'path': '/ideogram-page',
+  'element': <IdeogramPage />
 }];
 
 var SidebarElements = [];
 
 let SidebarWorkflows = [{ 
   'primaryText': 'International Patient Summary',
-  'to': '/moonshot-patient-chart',
-  'href': '/moonshot-patient-chart'
+  'to': '/patient-chart',
+  'href': '/patient-chart'
 }];
 
 
@@ -30,12 +32,12 @@ let SidebarWorkflows = [{
 const MainPage = {
   'name': 'Patient Chart',
   'path': '/',
-  'element': <PatientChart />
+  'element': <GenomeChart />
 };
 
 export { 
   MainPage, 
-  FooterButtons, 
+  // FooterButtons, 
   SidebarWorkflows, 
   SidebarElements, 
   DynamicRoutes

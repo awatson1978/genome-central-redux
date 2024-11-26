@@ -17,7 +17,7 @@ import { useTracker } from 'meteor/react-meteor-data';
 //============================================================================================================================
 // IPS Buttons
 
-export function PatientChartButtons(props){
+export function GenomeChartButtons(props){
 
 
   function handleButtonClick(){
