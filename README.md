@@ -1,6 +1,6 @@
 # awatson:genome-central-redux
 
-![PatientChartScreencapture](https://gitlab.mitre.org/awatson/q4-moonshot/-/raw/main/PatientChartScreencapture.png?ref_type=heads')
+<!-- ![PatientChartScreencapture](https://gitlab.mitre.org/awatson/q4-moonshot/-/raw/main/PatientChartScreencapture.png?ref_type=heads') -->
 
 
 
