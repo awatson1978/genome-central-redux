@@ -6,7 +6,7 @@ import { Meteor } from 'meteor/meteor';
 
 
 
-Meteor.startup(function(){
+Meteor.startup(async function(){
   console.log("*************************************************************************************");
   console.log("*************************************************************************************");
   console.log("Starting up " + Meteor.settings.public.title);
@@ -40,7 +40,7 @@ Meteor.startup(function(){
     Meteor.call('generateDailyStat');
 
 
-    if (HipaaLog.find().count() === 0 ){
+    if (await HipaaLog.find().countAsync() === 0 ){
       HipaaLogger.logEvent({
         eventType: "init",
         userId: 'System',

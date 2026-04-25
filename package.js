@@ -33,6 +33,7 @@ Package.onUse(function(api) {
 
 Npm.depends({
     // UChicago MSBI
+    "ideogram": "1.53.0",
     "bedjs": "1.0.3",
     "biojs-alg-seqregion": "0.1.1",
     "bionode-sam": "1.0.1",
@@ -45,15 +46,5 @@ Npm.depends({
     // Fillbot AI
     "@langchain/core": "0.1.17",
     "@langchain/openai": "0.0.28",
-    "gpt-tokens": "1.3.4",
-
-    // Protein LLMs
-    "transformersjs": "1.1.0",
-    "js-pytorch": "0.7.2",
-    "ndarray-js": "1.0.3",
-    "jpandas": "2.0.0",
-
-    // for using numpy, sklearn, etc
-    "pymport": "1.5.1",
-
+    "gpt-tokens": "1.3.4"
 })

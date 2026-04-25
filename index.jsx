@@ -1,6 +1,6 @@
 import React from 'react';
 
-// import GenomeChart from './client/GenomeChart';
+import GenomeChart from './client/GenomeChart';
 import IdeogramPage from './client/IdeogramPage';
 
 

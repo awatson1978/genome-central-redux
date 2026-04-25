@@ -5,15 +5,23 @@ import { Session } from 'meteor/session';
 import { Meteor } from 'meteor/meteor';
 import { HTTP } from 'meteor/http';
 
-import http from 'http';
-import https from 'https';
 
 
 //----------------------------------------------------------------------
 // SMART on FHIR State Variables
 
-import jwt from 'jsonwebtoken';
 import moment from 'moment';
+
+// Browser-compatible JWT payload decoder (replaces jsonwebtoken which requires Node.js builtins)
+function decodeJwtPayload(token) {
+  try {
+    const base64Url = token.split('.')[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(base64));
+  } catch (e) {
+    return null;
+  }
+}
 
 // TODO:  need to add these somewhere
 
@@ -146,7 +154,7 @@ if(codeVerifier){
 console.info('exchangeCodeForAccessToken.code', searchParams.get('code'))
 console.info('exchangeCodeForAccessToken.payload', payload)
 
-const decodedCode = jwt.decode(searchParams.get('code'));
+const decodedCode = decodeJwtPayload(searchParams.get('code'));
 console.info('exchangeCodeForAccessToken.decodedCode', decodedCode);
 
 // Convert to human-readable dates

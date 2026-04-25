@@ -25,8 +25,21 @@ import { GPTTokens } from 'gpt-tokens';
 
 import { useLocation, useNavigate } from "react-router-dom";
 
+import moment from 'moment';
+
 import PatientCard from './PatientCard';
 import SmartOnFhir, { fetchCapabilityStatement } from './SmartOnFhir';
+
+// Browser-compatible JWT payload decoder (replaces jsonwebtoken which requires Node.js builtins)
+function decodeJwtPayload(token) {
+  try {
+    const base64Url = token.split('.')[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(base64));
+  } catch (e) {
+    return null;
+  }
+}
 
 
 // //====================================================================================
@@ -248,9 +261,6 @@ function PatientChart(props){
 
   //----------------------------------------------------------------------
   // SMART on FHIR State Variables
-
-  import jwt from 'jsonwebtoken';
-  import moment from 'moment';
 
   let [serverCapabilityStatement, setServerCapabilityStatement] = useState("");
   let [wellKnownSmartConfig, setWellKnownSmartConfig] = useState("");
@@ -504,7 +514,7 @@ function PatientChart(props){
     console.info('exchangeCodeForAccessToken.code', searchParams.get('code'))
     console.info('exchangeCodeForAccessToken.payload', payload)
     
-    const decodedCode = jwt.decode(searchParams.get('code'));
+    const decodedCode = decodeJwtPayload(searchParams.get('code'));
     console.info('exchangeCodeForAccessToken.decodedCode', decodedCode);
 
     // Convert to human-readable dates

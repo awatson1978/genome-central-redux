@@ -1,33 +1,27 @@
-// import { RiskAssessments } from '/imports/api/devices/devices';
-//
-// Meteor.publish('devices', function(){
-//   return RiskAssessments.find();
-// });
+// packages/genome-central-redux/server/fhir.risk-assessments.js
 
 Meteor.methods({
-  createRiskAssessment:function(deviceObject){
+  createRiskAssessment: async function(deviceObject){
     check(deviceObject, Object);
 
     if (process.env.NODE_ENV === 'test') {
       console.log('Creating RiskAssessment...');
-      RiskAssessments.insert(deviceObject, function(error, result){
-        if (error) {
-          console.log(error);
-        }
-        if (result) {
-          console.log('RiskAssessment created: ' + result);
-        }
-      });
+      try {
+        const result = await RiskAssessments.insertAsync(deviceObject);
+        console.log('RiskAssessment created: ' + result);
+      } catch (error) {
+        console.log(error);
+      }
     } else {
       console.log('This command can only be run in a test environment.');
       console.log('Try setting NODE_ENV=test');
     }
   },
-  initializeRiskAssessment:function(){
+  initializeRiskAssessment: async function(){
 
     if (process.env.INITIALIZE) {
 
-      if (RiskAssessments.find().count() === 0) {
+      if (await RiskAssessments.find().countAsync() === 0) {
         console.log('No records found in RiskAssessments collection.  Lets create some...');
 
         var defaultRiskAssessment = {
@@ -126,13 +120,14 @@ Meteor.methods({
       }
     }
   },
-  dropRiskAssessments: function(){
+  dropRiskAssessments: async function(){
     if (process.env.NODE_ENV === 'test') {
       console.log('-----------------------------------------');
       console.log('Dropping devices... ');
-      RiskAssessments.find().forEach(function(assessment){
-        RiskAssessments.remove({_id: assessment._id});
-      });
+      const assessments = await RiskAssessments.find().fetchAsync();
+      for (const assessment of assessments) {
+        await RiskAssessments.removeAsync({_id: assessment._id});
+      }
     } else {
       console.log('This command can only be run in a test environment.');
       console.log('Try setting NODE_ENV=test');

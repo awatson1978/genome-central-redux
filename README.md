@@ -107,3 +107,15 @@ Once created, you will need to run Meteor with your custom settings file.  An ex
 ```bash
 meteor run --settings packages/q4-moonshot/configs/settings.moonshot.localhost.json  
 ```
+
+
+
+
+#### References  
+
+
+- [Sid Sijbrandij Cancer Journey](https://sytse.com/cancer/)  
+- [Going Founder Mode On Cancer](https://centuryofbio.com/p/sid)  
+- [Sid Cancer Journey](https://docs.google.com/presentation/d/1GtYR8Of7215PJbTqwJILK3_ESlMLvKzLRL4lFSgeGl4/edit?slide=id.g3c0968bd9b2_3_0#slide=id.g3c0968bd9b2_3_0)  
+- [From Terminal to Turnaround: How GitLab’s Co-Founder Leveraged ChatGPT in His Cancer Fight](https://forum.openai.com/public/videos/event-replay-from-terminal-to-turnaround-how-gitlabs-co-founder-leveraged-chatgpt-in-his-cancer-fight-2026-03-18)  
+
