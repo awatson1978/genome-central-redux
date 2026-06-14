@@ -3,7 +3,7 @@ import { get } from 'lodash';
 
 import { Session } from 'meteor/session';
 import { Meteor } from 'meteor/meteor';
-import { HTTP } from 'meteor/http';
+import { HTTP } from '../lib/httpClient';
 
 
 

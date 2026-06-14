@@ -22,6 +22,7 @@ export function Karyotype(props) {
   var sex = props.sex || 'female';
   var ideogramRef = useRef(null);
   var styleRef = useRef(null);
+  var containerRef = useRef(null);
 
   useEffect(function() {
     // Remove any previously injected style
@@ -42,6 +43,30 @@ export function Karyotype(props) {
           document.head.appendChild(styleEl);
           styleRef.current = styleEl;
         }
+
+        // Scale karyotype to fill container width
+        var container = containerRef.current;
+        if (container) {
+          var innerWrap = document.getElementById('_ideogramInnerWrap');
+          if (innerWrap) {
+            innerWrap.style.maxWidth = 'none';
+            innerWrap.style.position = 'relative';
+
+            var contentWidth = innerWrap.scrollWidth;
+            var containerWidth = container.clientWidth;
+
+            if (contentWidth > 0 && containerWidth > contentWidth) {
+              var scaleX = Math.min(2.5, containerWidth / contentWidth);
+              if (scaleX > 1.05) {
+                innerWrap.style.transform = 'scaleX(' + scaleX.toFixed(3) + ')';
+                innerWrap.style.transformOrigin = 'left top';
+              }
+            }
+          }
+        }
+      },
+      onLoadError: function(error) {
+        console.error('[IdeogramComponent] Failed to load ideogram:', error);
       }
     });
 
@@ -58,5 +83,5 @@ export function Karyotype(props) {
     };
   }, [isDark, sex]);
 
-  return <div id='ideogram' style={{ minHeight: '600px', display: 'flex', justifyContent: 'center' }} />;
+  return <div id='ideogram' ref={containerRef} style={{ minHeight: '600px', width: '100%' }} />;
 }

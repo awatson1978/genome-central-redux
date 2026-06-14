@@ -5,6 +5,7 @@ import { get, set, has, concat, pullAt } from 'lodash';
 
 import { Meteor } from 'meteor/meteor';
 import { Session } from 'meteor/session';
+import { HTTP } from '../lib/httpClient';
 
 import { Button, Grid, Box, MenuItem, Select, Card, CardMedia, CardHeader, CardContent, CardActions, Typography } from '@mui/material';
 import { Alert, AlertTitle } from '@mui/lab';

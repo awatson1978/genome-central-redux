@@ -2,35 +2,37 @@
 import React, { useState, useMemo } from 'react';
 import {
   Alert, AlertTitle, Box, Card, CardHeader, CardContent, Grid,
-  Table, TableHead, TableBody, TableRow, TableCell, TableContainer,
   ToggleButton, ToggleButtonGroup, Tooltip,
   Typography
 } from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
 import { get } from 'lodash';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Session } from 'meteor/session';
 import { Karyotype } from './IdeogramComponent';
 import { resolveChromosomalSex } from '../lib/resolveChromosomalSex';
-
 let useAppTheme;
+let FhirUtilities;
+let SpecimensTable;
 let MolecularSequences;
-let BiologicallyDerivedProducts;
+let Specimens;
 
 Meteor.startup(async function() {
   useAppTheme = Meteor.useTheme;
+  FhirUtilities = Meteor.FhirUtilities;
+  SpecimensTable = Meteor.SpecimensTable;
   MolecularSequences = await global.Collections.MolecularSequences;
-  BiologicallyDerivedProducts = await global.Collections.BiologicallyDerivedProducts;
+  Specimens = await global.Collections.Specimens;
 });
 
 export function KaryotypePage() {
+  const theme = useTheme();
   const appTheme = useAppTheme ? useAppTheme() : { theme: 'light' };
   const isDark = appTheme.theme === 'dark';
 
-  const cardBgColor = isDark ? '#1e1e1e' : '#ffffff';
-  const cardTextColor = isDark ? 'rgba(255, 255, 255, 0.87)' : 'rgba(0, 0, 0, 0.87)';
-
   // null = auto (from patient), 'male' or 'female' = manual override
   const [sexOverride, setSexOverride] = useState(null);
+  const [specimensPage, setSpecimensPage] = useState(0);
 
   // Read selected patient from Session
   const patient = useTracker(function() {
@@ -63,48 +65,42 @@ export function KaryotypePage() {
     return null;
   }, []);
 
-  // Fetch all BiologicallyDerivedProduct resources
-  const samples = useTracker(function() {
-    if (BiologicallyDerivedProducts) {
-      return BiologicallyDerivedProducts.find({}).fetch();
+  // Fetch Specimen resources for the selected patient
+  const specimens = useTracker(function() {
+    if (Specimens) {
+      const selectedPatient = Session.get('selectedPatient');
+      const fhirId = get(selectedPatient, 'id');
+      if (fhirId) {
+        return Specimens.find(FhirUtilities.addPatientFilterToQuery(fhirId)).fetch();
+      }
+      return Specimens.find({}).fetch();
     }
     return [];
   }, []);
 
   return (
-    <div id="IdeogramPage" style={{ padding: '20px' }}>
+    <Box id="IdeogramPage" sx={{ p: 2.5 }}>
       <Grid container spacing={2}>
-        <Grid item xs={12} md={4} sx={{ display: 'flex' }}>
+        <Grid item xs={12} md={3} sx={{ display: 'flex' }}>
           <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', gap: 2 }}>
             <Card sx={{
-              bgcolor: cardBgColor,
-              color: cardTextColor,
-              '& .MuiCardHeader-title': { color: cardTextColor }
+              bgcolor: 'background.paper',
+              color: 'text.primary'
             }}>
               <CardHeader title="Genetic Sequence Baseline" />
               <CardContent>
                 {sequenceBaseline ? (
-                  <Alert severity="info" sx={{
-                    bgcolor: isDark ? 'rgba(33, 150, 243, 0.15)' : 'rgba(33, 150, 243, 0.1)',
-                    color: cardTextColor,
-                    '& .MuiAlert-icon': { color: isDark ? '#90caf9' : '#1976d2' },
-                    '& .MuiAlertTitle-root': { color: cardTextColor }
-                  }}>
+                  <Alert severity="info">
                     <Typography variant="body2" sx={{ fontWeight: 600 }}>
                       {get(sequenceBaseline, 'type', 'Unknown').toUpperCase()} Sequence
                     </Typography>
-                    <Typography variant="caption" sx={{ opacity: 0.7 }}>
+                    <Typography variant="caption" color="text.secondary">
                       {get(sequenceBaseline, 'referenceSeq.referenceSeqId.text',
                         get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.display', 'No reference sequence'))}
                     </Typography>
                   </Alert>
                 ) : (
-                  <Alert severity="info" sx={{
-                    bgcolor: isDark ? 'rgba(33, 150, 243, 0.15)' : 'rgba(33, 150, 243, 0.1)',
-                    color: cardTextColor,
-                    '& .MuiAlert-icon': { color: isDark ? '#90caf9' : '#1976d2' },
-                    '& .MuiAlertTitle-root': { color: cardTextColor }
-                  }}>
+                  <Alert severity="info">
                     <AlertTitle>No sequence baseline</AlertTitle>
                     Import a MolecularSequence resource to establish a genetic baseline for comparison.
                   </Alert>
@@ -113,51 +109,35 @@ export function KaryotypePage() {
             </Card>
             <Card sx={{
               flex: 1,
-              bgcolor: cardBgColor,
-              color: cardTextColor,
-              '& .MuiCardHeader-title': { color: cardTextColor },
+              display: 'flex',
+              flexDirection: 'column',
+              bgcolor: 'background.paper',
+              color: 'text.primary',
               '& .MuiTableCell-root': {
-                color: cardTextColor,
-                borderColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)'
+                borderColor: 'divider'
               }
             }}>
               <CardHeader title="AVATAR Samples" />
-              <CardContent>
-                {samples.length > 0 ? (
-                  <TableContainer>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Product Category</TableCell>
-                          <TableCell>Product Code</TableCell>
-                          <TableCell>Status</TableCell>
-                          <TableCell>Collection Date</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {samples.map(function(sample) {
-                          return (
-                            <TableRow
-                              key={get(sample, '_id')}
-                              sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'action.hover' } }}
-                            >
-                              <TableCell>{get(sample, 'productCategory', '')}</TableCell>
-                              <TableCell>
-                                {get(sample, 'productCode.text',
-                                  get(sample, 'productCode.coding.0.display', ''))}
-                              </TableCell>
-                              <TableCell>{get(sample, 'status', '')}</TableCell>
-                              <TableCell>
-                                {get(sample, 'collection.collectedDateTime', '')}
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
+              <CardContent sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', p: 2 }}>
+                {specimens.length > 0 ? (
+                  <Box sx={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+                    <SpecimensTable
+                      specimens={specimens}
+                      hideCheckbox={true}
+                      hidePatientName={true}
+                      hidePatientReference={true}
+                      hideBarcode={true}
+                      count={specimens.length}
+                      page={specimensPage}
+                      rowsPerPage={5}
+                      tableRowSize="small"
+                      onSetPage={function(newPage) {
+                        setSpecimensPage(newPage);
+                      }}
+                    />
+                  </Box>
                 ) : (
-                  <Typography variant="body2" sx={{ color: cardTextColor, opacity: 0.7 }}>
+                  <Typography variant="body2" color="text.secondary">
                     No samples available
                   </Typography>
                 )}
@@ -165,11 +145,126 @@ export function KaryotypePage() {
             </Card>
           </Box>
         </Grid>
-        <Grid item xs={12} md={8}>
+        <Grid item xs={12} md={4} sx={{ display: 'flex' }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', gap: 2 }}>
+            <Card sx={{
+              bgcolor: 'background.paper',
+              color: 'text.primary'
+            }}>
+              <CardHeader title="Sequence Detail" />
+              <CardContent>
+                {sequenceBaseline ? (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Type</Typography>
+                      <Typography variant="body2">{get(sequenceBaseline, 'type', 'Unknown').toUpperCase()}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Coordinate System</Typography>
+                      <Typography variant="body2">{get(sequenceBaseline, 'coordinateSystem', 'N/A')}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Reference Sequence ID</Typography>
+                      <Typography variant="body2">
+                        {get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.code',
+                          get(sequenceBaseline, 'referenceSeq.referenceSeqId.text', 'N/A'))}
+                      </Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Reference Sequence</Typography>
+                      <Typography variant="body2">
+                        {get(sequenceBaseline, 'referenceSeq.referenceSeqId.text',
+                          get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.display', 'N/A'))}
+                      </Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Read Coverage</Typography>
+                      <Typography variant="body2">{get(sequenceBaseline, 'readCoverage', 'N/A')}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Patient Reference</Typography>
+                      <Typography variant="body2">{get(sequenceBaseline, 'patient.reference', 'N/A')}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Specimen Reference</Typography>
+                      <Typography variant="body2">{get(sequenceBaseline, 'specimen.reference', 'N/A')}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Device Reference</Typography>
+                      <Typography variant="body2">{get(sequenceBaseline, 'device.reference', 'N/A')}</Typography>
+                    </Box>
+                  </Box>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    No MolecularSequence data available.
+                  </Typography>
+                )}
+              </CardContent>
+            </Card>
+            <Card sx={{
+              flex: 1,
+              bgcolor: 'background.paper',
+              color: 'text.primary'
+            }}>
+              <CardHeader title="Specimen Detail" />
+              <CardContent>
+                {specimens.length > 0 ? (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Status</Typography>
+                      <Typography variant="body2">{get(specimens, '0.status', 'N/A')}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Type</Typography>
+                      <Typography variant="body2">
+                        {get(specimens, '0.type.text',
+                          get(specimens, '0.type.coding.0.display', 'N/A'))}
+                      </Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Accession ID</Typography>
+                      <Typography variant="body2">
+                        {get(specimens, '0.accessionIdentifier.value', 'N/A')}
+                      </Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Collection Date</Typography>
+                      <Typography variant="body2">
+                        {get(specimens, '0.collection.collectedDateTime', 'N/A')}
+                      </Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Collection Method</Typography>
+                      <Typography variant="body2">
+                        {get(specimens, '0.collection.method.text',
+                          get(specimens, '0.collection.method.coding.0.display', 'N/A'))}
+                      </Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Body Site</Typography>
+                      <Typography variant="body2">
+                        {get(specimens, '0.collection.bodySite.text',
+                          get(specimens, '0.collection.bodySite.coding.0.display', 'N/A'))}
+                      </Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Patient Reference</Typography>
+                      <Typography variant="body2">{get(specimens, '0.subject.reference', 'N/A')}</Typography>
+                    </Box>
+                  </Box>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    No specimen data available.
+                  </Typography>
+                )}
+              </CardContent>
+            </Card>
+          </Box>
+        </Grid>
+        <Grid item xs={12} md={5}>
           <Card sx={{
-            bgcolor: cardBgColor,
-            color: cardTextColor,
-            '& .MuiCardHeader-title': { color: cardTextColor }
+            bgcolor: 'background.paper',
+            color: 'text.primary'
           }}>
             <CardHeader
               title="Human Karyotype"
@@ -181,16 +276,23 @@ export function KaryotypePage() {
                   size="small"
                   sx={{
                     '& .MuiToggleButton-root': {
-                      color: cardTextColor,
-                      borderColor: isDark ? 'rgba(255,255,255,0.23)' : 'rgba(0,0,0,0.23)',
+                      color: 'text.secondary',
+                      borderColor: 'divider',
                       textTransform: 'none',
                       px: 1.5,
                       py: 0.25,
-                      fontSize: '0.75rem'
-                    },
-                    '& .Mui-selected': {
-                      bgcolor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)',
-                      color: cardTextColor
+                      fontSize: '0.75rem',
+                      '&.Mui-selected': {
+                        backgroundColor: alpha(theme.palette.primary.main, 0.08),
+                        color: 'primary.main',
+                        borderColor: 'primary.main',
+                        '&:hover': {
+                          backgroundColor: alpha(theme.palette.primary.main, 0.12)
+                        }
+                      },
+                      '&:hover': {
+                        backgroundColor: 'action.hover'
+                      }
                     }
                   }}
                 >
@@ -204,27 +306,13 @@ export function KaryotypePage() {
                 </ToggleButtonGroup>
               }
             />
-            <CardContent sx={{ bgcolor: isDark ? '#1e1e1e' : '#ffffff', minHeight: '600px' }}>
-              {sequenceBaseline ? (
-                <Karyotype isDark={isDark} sex={effectiveSex} />
-              ) : (
-                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '600px' }}>
-                  <Alert severity="warning" sx={{
-                    bgcolor: isDark ? 'rgba(237, 108, 2, 0.15)' : 'rgba(237, 108, 2, 0.1)',
-                    color: cardTextColor,
-                    '& .MuiAlert-icon': { color: isDark ? '#ff9800' : '#ed6c02' },
-                    '& .MuiAlertTitle-root': { color: cardTextColor }
-                  }}>
-                    <AlertTitle>No Genetic Baseline Available</AlertTitle>
-                    Import a MolecularSequence resource with type "dna" to display the patient's karyotype.
-                  </Alert>
-                </Box>
-              )}
+            <CardContent sx={{ bgcolor: 'background.paper', minHeight: '600px' }}>
+              <Karyotype isDark={isDark} sex={effectiveSex} />
             </CardContent>
           </Card>
         </Grid>
       </Grid>
-    </div>
+    </Box>
   );
 }
 
