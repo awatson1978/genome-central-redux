@@ -1,5 +1,5 @@
 {
-  "name": "@node-on-fhir/genome-central-redux",
+  "name": "@orbital/genome-central-redux",
   "private": true,
   "version": "0.1.0",
   "description": "Genome Central - chromosome ideograms, risk assessments, genomic file parsing + AI - migrated from packages/genome-central-redux (awatson:genome-central-redux)",
