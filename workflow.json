@@ -1,5 +1,6 @@
 {
   "name": "genome-central-redux",
+  "serverEntry": "./server",
   "displayName": "Genome Central",
   "comment": "Routes/sidebar are built in client.js (DynamicRoutes / SidebarWorkflows / MainPage); this manifest is metadata only.",
   "routes": [],
