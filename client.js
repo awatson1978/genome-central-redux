@@ -16,6 +16,12 @@ import React from 'react';
 import GenomeChart from './client/GenomeChart';
 import IdeogramPage from './client/IdeogramPage';
 
+// The chromosome data visualization rendered under the "Human Karyotype"
+// header on /ideogram-page. Implemented as `Karyotype` (the in-file name
+// avoids colliding with the `ideogram` npm library, which IdeogramComponent
+// imports as `Ideogram`); re-exported here under its public name `Ideogram`.
+import { Karyotype as Ideogram } from './client/IdeogramComponent';
+
 import {
   GenomeChartButtons
 } from './client/FooterButtons';
@@ -24,27 +30,23 @@ var DynamicRoutes = [{
   'name': 'Ideogram Page',
   'path': '/ideogram-page',
   'element': <IdeogramPage />
+}, {
+  // Alias so the package name (@orbital/genome-central) resolves as a route.
+  'name': 'Genome Central',
+  'path': '/genome-central',
+  'element': <IdeogramPage />
 }];
 
 var SidebarElements = [];
 
-let SidebarWorkflows = [{
-  'primaryText': 'International Patient Summary',
-  'to': '/patient-chart',
-  'href': '/patient-chart'
-}];
+let SidebarWorkflows = [];
 
-const MainPage = {
-  'name': 'Patient Chart',
-  'path': '/',
-  'element': <GenomeChart />
-};
 
 export {
-  MainPage,
   SidebarWorkflows,
   SidebarElements,
-  DynamicRoutes
+  DynamicRoutes,
+  Ideogram
 };
 
 export default {
