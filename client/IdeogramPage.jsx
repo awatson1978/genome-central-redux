@@ -21,8 +21,10 @@ Meteor.startup(async function() {
   useAppTheme = Meteor.useTheme;
   FhirUtilities = Meteor.FhirUtilities;
   SpecimensTable = Meteor.SpecimensTable;
-  MolecularSequences = await global.Collections.MolecularSequences;
-  Specimens = await global.Collections.Specimens;
+  // `global.Collections` is undefined on the client — the collection registry
+  // lives at Meteor.Collections (populated by imports/startup/client/collections.js).
+  MolecularSequences = Meteor.Collections?.MolecularSequences;
+  Specimens = Meteor.Collections?.Specimens;
 });
 
 export function KaryotypePage() {
