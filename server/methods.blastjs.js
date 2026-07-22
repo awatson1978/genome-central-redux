@@ -3,6 +3,7 @@
 // https://github.com/TeamMacLean/blastjs
 
 import { FileParsers } from '/imports/api/genotype/FileParsers';
+import { get } from 'lodash';
 
 //import blast from 'blastjs';
 
@@ -12,59 +13,74 @@ var outPath = './';
 var name = 'example';
 
 
-Meteor.methods({
-  blastConfig: function(){
-    console.log("=============================================================");
-    console.log("BLAST+ Config");
+Meteor.ServerMethods.define('genomics.blastConfig', {
+  description: 'Build the BLAST+ nucleotide database from configured settings.',
+  aliases: ['blastConfig'],
+  requireAuth: true,
+  phi: true
+}, async function(params, context){
+  console.log("=============================================================");
+  console.log("BLAST+ Config");
 
 
-    let fileIn = '';
-    if (Meteor.settings && Meteor.settings.private && Meteor.settings.private.blast && Meteor.settings.private.blast.inputFile) {
-      fileIn = Meteor.settings.private.blast.inputFile;
-    }
-    let outPath = '';
-    if (Meteor.settings && Meteor.settings.private && Meteor.settings.private.blast && Meteor.settings.private.blast.outPath) {
-      outPath = Meteor.settings.private.blast.outPath;
-    }
-
-    console.log("Creating BLAST database");
-    blast.makeDB('nucl', fileIn, outPath, name, function(err){
-      if(err){
-        console.error(err);
-      } else {
-        console.log('database created at', outPath);
-      }
-    });
-  },
-
-  blastN: function(snippet){
-    check(snippet, String);
-    console.log("=============================================================");
-    console.log("BLASTN");
-    console.log("Snippet: " + snippet);
-
-    //blast.outputString(true);
-
-    var dbPath = './example';
-    if (Meteor.settings && Meteor.settings.private && Meteor.settings.private.blast && Meteor.settings.private.blast.dbPath) {
-      dbPath = Meteor.settings.private.blast.dbPath;
-    }
-
-    var query = 'CTAATACCGAATAAGGTCAGTTAATTTGTTAATTGATGAAAGGAAGCCTT';
-    var result;
-
-    blast.blastN(dbPath, query, function (err, output) {
-      if(!err){
-        console.log("--------------------------------------------------------");
-        console.log("BlastN Result");
-        console.log("");
-
-        console.log(output);
-      }
-    });
-
-
+  let fileIn = '';
+  if (Meteor.settings && Meteor.settings.private && Meteor.settings.private.blast && Meteor.settings.private.blast.inputFile) {
+    fileIn = Meteor.settings.private.blast.inputFile;
   }
+  let outPath = '';
+  if (Meteor.settings && Meteor.settings.private && Meteor.settings.private.blast && Meteor.settings.private.blast.outPath) {
+    outPath = Meteor.settings.private.blast.outPath;
+  }
+
+  console.log("Creating BLAST database");
+  blast.makeDB('nucl', fileIn, outPath, name, function(err){
+    if(err){
+      console.error(err);
+    } else {
+      console.log('database created at', outPath);
+    }
+  });
+});
+
+Meteor.ServerMethods.define('genomics.blastN', {
+  description: 'Run a BLASTN nucleotide search for the supplied sequence snippet.',
+  aliases: ['blastN'],
+  requireAuth: true,
+  phi: true,
+  positionalParams: ['snippet'],
+  schemaObject: {
+    type: 'object',
+    properties: {
+      snippet: { type: 'string' }
+    },
+    required: ['snippet']
+  }
+}, async function(params, context){
+  const snippet = get(params, 'snippet');
+  console.log("=============================================================");
+  console.log("BLASTN");
+  console.log("Snippet: " + snippet);
+
+  //blast.outputString(true);
+
+  var dbPath = './example';
+  if (Meteor.settings && Meteor.settings.private && Meteor.settings.private.blast && Meteor.settings.private.blast.dbPath) {
+    dbPath = Meteor.settings.private.blast.dbPath;
+  }
+
+  var query = 'CTAATACCGAATAAGGTCAGTTAATTTGTTAATTGATGAAAGGAAGCCTT';
+  var result;
+
+  blast.blastN(dbPath, query, function (err, output) {
+    if(!err){
+      console.log("--------------------------------------------------------");
+      console.log("BlastN Result");
+      console.log("");
+
+      console.log(output);
+    }
+  });
+
 
 });
 
