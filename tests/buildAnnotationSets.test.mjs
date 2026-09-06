@@ -76,3 +76,39 @@ test('mergeAnnotationSets returns null with no input sets', function() {
   assert.equal(builders.mergeAnnotationSets([]), null);
   assert.equal(builders.mergeAnnotationSets([null, undefined]), null);
 });
+
+test('buildDensityAnnots clamps the final bin to the chromosome end (bp-out-of-range regression)', function() {
+  const binSize = 5000000;
+  const chr1Length = builders.CHR_LENGTHS_GRCH37['1']; // 249250621
+  const lastBin = Math.floor(chr1Length / binSize);    // bin 49 → start 245Mb
+  const set = builders.buildDensityAnnots([
+    { chromosome: '1', bin: lastBin, count: 42 },
+    { chromosome: '1', bin: lastBin + 1, count: 7 }    // starts past chr end → dropped
+  ], binSize);
+  const chr1 = set.annots.find(function(entry) { return entry.chr === '1'; });
+  assert.equal(chr1.annots.length, 1);
+  const annot = chr1.annots[0];
+  assert.equal(annot[1], lastBin * binSize);
+  assert.equal(annot[1] + annot[2], chr1Length, 'start+length exactly reaches the chromosome end');
+});
+
+test('clampAnnotationSet repairs stored sets that overrun chromosome bounds', function() {
+  const chr1Length = builders.CHR_LENGTHS_GRCH37['1'];
+  const stored = {
+    keys: builders.ANNOTATION_KEYS.slice(),
+    annots: [
+      { chr: '1', annots: [
+        ['ok bin', 0, 5000000, 1, '#5c6bc0'],
+        ['overrun bin', 245000000, 5000000, 1, '#5c6bc0'],   // 250Mb > 249250621
+        ['past end', chr1Length + 10, 5000000, 1, '#5c6bc0'] // dropped
+      ] },
+      { chr: '2', annots: [ ['fully past end', 400000000, 1, 0, '#d32f2f'] ] } // chr entry emptied → dropped
+    ]
+  };
+  const clamped = builders.clampAnnotationSet(stored);
+  assert.equal(clamped.annots.length, 1);
+  assert.equal(clamped.annots[0].chr, '1');
+  assert.equal(clamped.annots[0].annots.length, 2);
+  assert.equal(clamped.annots[0].annots[1][1] + clamped.annots[0].annots[1][2], chr1Length);
+  assert.equal(builders.clampAnnotationSet(null), null, 'null passes through');
+});

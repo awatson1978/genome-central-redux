@@ -462,14 +462,17 @@ Meteor.ServerMethods.define('genomics.getAnnotationSets', {
 }, async function(params) {
   const patientId = get(params, 'patientId');
 
-  const notable = await GenomeAnnotationSets.findOneAsync(
+  // Read-side clamp to GRCh37 chromosome bounds — covers sets stored before
+  // build-time clamping existed (ideogram throws "Base pair out of range"
+  // when an annotation runs past the chromosome end).
+  const notable = annotationBuilders.clampAnnotationSet(await GenomeAnnotationSets.findOneAsync(
     { patientId: patientId, trackType: 'notable' },
     { sort: { createdAt: -1 } }
-  );
-  const density = await GenomeAnnotationSets.findOneAsync(
+  ));
+  const density = annotationBuilders.clampAnnotationSet(await GenomeAnnotationSets.findOneAsync(
     { patientId: patientId, trackType: 'density' },
     { sort: { createdAt: -1 } }
-  );
+  ));
 
   // Read-side merge of variant Observations (LOINC 69548-6) created by the
   // pdf-parser GenomicsReportSkill: place each reported variant at the
