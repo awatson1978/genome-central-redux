@@ -25,55 +25,82 @@ export function Karyotype(props) {
   var containerRef = useRef(null);
 
   useEffect(function() {
+    var cancelled = false;
+    var rafId = null;
+
     // Remove any previously injected style
     if (styleRef.current) {
       styleRef.current.remove();
       styleRef.current = null;
     }
 
-    ideogramRef.current = new Ideogram({
-      organism: 'human',
-      sex: sex,
-      container: '#ideogram',
-      onLoad: function() {
-        if (isDark) {
-          var styleEl = document.createElement('style');
-          styleEl.setAttribute('data-ideogram-dark', 'true');
-          styleEl.textContent = DARK_MODE_CSS;
-          document.head.appendChild(styleEl);
-          styleRef.current = styleEl;
-        }
+    // The ideogram library resolves its container with
+    // document.querySelector('#ideogram') synchronously in its constructor.
+    // If this effect fires while the div is not (yet) attached to the document
+    // — route transitions, suspense retries, HMR remounts — the constructor
+    // dies with "Cannot read properties of null (reading 'getBoundingClientRect')".
+    // Defer construction until the container is genuinely connected.
+    function initIdeogram() {
+      if (cancelled) { return; }
+      var containerEl = containerRef.current;
+      if (!containerEl || !containerEl.isConnected) {
+        rafId = requestAnimationFrame(initIdeogram);
+        return;
+      }
+      constructIdeogram();
+    }
 
-        // Scale karyotype to fill container width
-        var container = containerRef.current;
-        if (container) {
-          var innerWrap = document.getElementById('_ideogramInnerWrap');
-          if (innerWrap) {
-            innerWrap.style.maxWidth = 'none';
-            innerWrap.style.position = 'relative';
+    function constructIdeogram() {
+      ideogramRef.current = new Ideogram({
+        organism: 'human',
+        sex: sex,
+        container: '#ideogram',
+        onLoad: function() {
+          if (isDark) {
+            var styleEl = document.createElement('style');
+            styleEl.setAttribute('data-ideogram-dark', 'true');
+            styleEl.textContent = DARK_MODE_CSS;
+            document.head.appendChild(styleEl);
+            styleRef.current = styleEl;
+          }
 
-            var contentWidth = innerWrap.scrollWidth;
-            var containerWidth = container.clientWidth;
+          // Scale karyotype to fill container width
+          var container = containerRef.current;
+          if (container) {
+            var innerWrap = document.getElementById('_ideogramInnerWrap');
+            if (innerWrap) {
+              innerWrap.style.maxWidth = 'none';
+              innerWrap.style.position = 'relative';
 
-            if (contentWidth > 0 && containerWidth > contentWidth) {
-              var scaleX = Math.min(2.5, containerWidth / contentWidth);
-              if (scaleX > 1.05) {
-                innerWrap.style.transform = 'scaleX(' + scaleX.toFixed(3) + ')';
-                innerWrap.style.transformOrigin = 'left top';
+              var contentWidth = innerWrap.scrollWidth;
+              var containerWidth = container.clientWidth;
+
+              if (contentWidth > 0 && containerWidth > contentWidth) {
+                var scaleX = Math.min(2.5, containerWidth / contentWidth);
+                if (scaleX > 1.05) {
+                  innerWrap.style.transform = 'scaleX(' + scaleX.toFixed(3) + ')';
+                  innerWrap.style.transformOrigin = 'left top';
+                }
               }
             }
           }
+        },
+        onLoadError: function(error) {
+          console.error('[IdeogramComponent] Failed to load ideogram:', error);
         }
-      },
-      onLoadError: function(error) {
-        console.error('[IdeogramComponent] Failed to load ideogram:', error);
-      }
-    });
+        });
+    }
+
+    initIdeogram();
 
     return function() {
+      cancelled = true;
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+      }
       var container = document.querySelector('#ideogram');
       if (container) {
-        container.innerHTML = '';
+        container.replaceChildren();
       }
       ideogramRef.current = null;
       if (styleRef.current) {
