@@ -20,6 +20,18 @@ import { DEFAULT_FHIR_DEID_CONTROLS } from '/imports/lib/FhirDeidentify';
 
 import parse23andMe from '../lib/parse23andMe';
 
+// name[0].text with a given+family fallback (Synthea patients sometimes
+// carry only the structured parts).
+function patientDisplayName(patient) {
+  const text = get(patient, 'name.0.text', '');
+  if (text) {
+    return text;
+  }
+  const given = get(patient, 'name.0.given', []);
+  const family = get(patient, 'name.0.family', '');
+  return ((Array.isArray(given) ? given.join(' ') : '') + ' ' + family).trim();
+}
+
 const POLL_INTERVAL_MS = 2000;
 // Rough bytes-per-line for a 23andMe export; drives the determinate progress
 // estimate (parsedLines * BYTES_PER_LINE / totalBytes).
@@ -180,7 +192,7 @@ export function GenomicsImportPanel(props) {
       // Resolve the target patient: anonymous reassignment wins, else the
       // selected patient (same precedence as the other importers' panels).
       let patientId = get(patient, 'id');
-      let patientDisplay = get(patient, 'name.0.text', '');
+      let patientDisplay = patientDisplayName(patient);
       if (get(deidControls, 'deidentifyEnabled') && get(deidControls, 'assignAnonymousPatient')) {
         const anonPatient = await Meteor.rpc('patients.findOrCreateAnonymous', {});
         patientId = get(anonPatient, 'id');
@@ -243,6 +255,7 @@ export function GenomicsImportPanel(props) {
           value={deidControls}
           onChange={setDeidControls}
           disabled={importing}
+          selectedPatientDisplay={patientDisplayName(patient)}
         />
         <Typography variant="caption" display="block" sx={{ color: 'text.secondary', mt: 0.5 }}>
           Note: raw genotypes are inherently re-identifiable. Assigning an
