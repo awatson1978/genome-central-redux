@@ -8,7 +8,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert, AlertTitle, Box, Button, Card, CardContent, CardHeader,
-  LinearProgress, Typography
+  Divider, LinearProgress, TextField, Typography
 } from '@mui/material';
 import BiotechIcon from '@mui/icons-material/Biotech';
 import { get } from 'lodash';
@@ -37,6 +37,14 @@ export function GenomicsImportPanel(props) {
   const [completedCounts, setCompletedCounts] = useState(null);
   const pollTimerRef = useRef(null);
 
+  // FASTQ reference-only section. Tri-state settings gate:
+  // null = checking, true = enabled, false = disabled.
+  const [localRefEnabled, setLocalRefEnabled] = useState(null);
+  const [fastqPathsText, setFastqPathsText] = useState('');
+  const [referencing, setReferencing] = useState(false);
+  const [referenceError, setReferenceError] = useState('');
+  const [referenceResult, setReferenceResult] = useState(null);
+
   const patient = useTracker(function() {
     return Session.get('selectedPatient');
   }, []);
@@ -48,6 +56,53 @@ export function GenomicsImportPanel(props) {
       }
     };
   }, []);
+
+  // Settings-gated feature check (tri-state prevents UI flicker)
+  useEffect(function() {
+    let mounted = true;
+    Meteor.rpc('genomics.checkLocalFileReferenceSetting', {})
+      .then(function(result) {
+        if (mounted) {
+          setLocalRefEnabled(get(result, 'allowLocalFileReference', false));
+        }
+      })
+      .catch(function(error) {
+        console.warn('[GenomicsImportPanel] Local-reference setting check failed:', error.message);
+        if (mounted) {
+          setLocalRefEnabled(false);
+        }
+      });
+    return function() { mounted = false; };
+  }, []);
+
+  async function handleReferenceFiles() {
+    setReferenceError('');
+    setReferenceResult(null);
+    const paths = fastqPathsText.split('\n')
+      .map(function(line) { return line.trim(); })
+      .filter(Boolean);
+    if (paths.length === 0) {
+      return;
+    }
+    const patientId = get(patient, 'id');
+    if (!patientId) {
+      setReferenceError('No patient selected.');
+      return;
+    }
+    setReferencing(true);
+    try {
+      const result = await Meteor.rpc('genomics.referenceLocalGenomicsFiles', {
+        paths: paths,
+        patientId: patientId,
+        patientDisplay: get(patient, 'name.0.text', '')
+      });
+      setReferenceResult(result);
+    } catch (error) {
+      setReferenceError(get(error, 'reason', error.message));
+    } finally {
+      setReferencing(false);
+    }
+  }
 
   async function handleFileChange(event) {
     const file = get(event, 'target.files.0');
@@ -218,6 +273,71 @@ export function GenomicsImportPanel(props) {
             {get(completedCounts, 'MyGenotype', 0).toLocaleString()} SNPs imported;
             annotation tracks, MolecularSequence, and DocumentReference created.
           </Alert>
+        )}
+
+        <Divider sx={{ my: 2 }} />
+        <Typography variant="subtitle2" gutterBottom>
+          Reference local WGS files (FASTQ)
+        </Typography>
+        {localRefEnabled === false && (
+          <Alert severity="info" sx={{ mb: 1 }}>
+            <AlertTitle>Local file referencing disabled</AlertTitle>
+            Large sequencing files are referenced in place, never copied.
+            Contact your administrator to enable it in the server settings
+            (Meteor.settings.private.genomics.allowLocalFileReference).
+          </Alert>
+        )}
+        {localRefEnabled === true && (
+          <Box>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              Absolute paths, one per line. Files are referenced in place
+              (path, size, sampled read stats, partial checksum) — the
+              multi-gigabyte files are never copied.
+            </Typography>
+            <TextField
+              id="fastqPathsInput"
+              fullWidth
+              multiline
+              minRows={2}
+              placeholder={'/Volumes/.../sample.1.fq.gz\n/Volumes/.../sample.2.fq.gz'}
+              value={fastqPathsText}
+              onChange={function(event) { setFastqPathsText(event.target.value); }}
+              disabled={referencing}
+              size="small"
+            />
+            <Button
+              id="fastqReferenceButton"
+              variant="outlined"
+              fullWidth
+              sx={{ mt: 1 }}
+              disabled={referencing || fastqPathsText.trim().length === 0}
+              onClick={handleReferenceFiles}
+            >
+              {referencing ? 'Sampling files…' : 'Reference Files'}
+            </Button>
+            {referencing && <LinearProgress sx={{ mt: 1 }} />}
+            {referenceError && (
+              <Alert severity="error" sx={{ mt: 1 }}>{referenceError}</Alert>
+            )}
+            {referenceResult && (
+              <Alert severity="success" sx={{ mt: 1 }}>
+                <AlertTitle>Files referenced</AlertTitle>
+                {get(referenceResult, 'files', []).map(function(file) {
+                  return (
+                    <Typography key={file.path} variant="caption" display="block">
+                      {file.filename}: {(file.fileBytes / (1024 * 1024 * 1024)).toFixed(1)} GB
+                      {file.sampledReads > 0
+                        ? ', ~' + file.meanReadLen + 'bp reads'
+                        : ''}
+                      {file.estReadCount > 0
+                        ? ', ~' + (file.estReadCount / 1e6).toFixed(0) + 'M reads (est.)'
+                        : ''}
+                    </Typography>
+                  );
+                })}
+              </Alert>
+            )}
+          </Box>
         )}
       </CardContent>
     </Card>

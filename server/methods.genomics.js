@@ -26,6 +26,16 @@ import { MyGenotype, GenomeAnnotationSets } from '../lib/GenomicsCollections.js'
 import parse23andMe from '../lib/parse23andMe.js';
 import notableMarkers from '../lib/notableMarkers.js';
 import annotationBuilders from '../lib/buildAnnotationSets.js';
+import fastqStats from '../lib/fastqStats.js';
+
+// Node core modules via the established real-require pattern
+const realRequire = (typeof Npm !== 'undefined' && Npm && typeof Npm.require === 'function')
+  ? Npm.require
+  : require;
+const nodeFs = realRequire('fs');
+const nodeZlib = realRequire('zlib');
+const nodeReadline = realRequire('readline');
+const nodeCrypto = realRequire('crypto');
 
 const log = (Meteor.Logger ? Meteor.Logger.for('genome-central') : console);
 
@@ -524,6 +534,264 @@ Meteor.ServerMethods.define('genomics.getAnnotationSets', {
     notable: notable || null,
     density: density || null,
     reportAnnotsAdded: reportAnnotsAdded
+  };
+});
+
+// ---------------------------------------------------------------------------
+// FASTQ reference-only import (Phase 3). The ~123GB WGS files are never
+// copied: fs.stat + a streamed sample of the first reads + a partial sha256
+// of the first 64MB produce a MolecularSequence per R1/R2 pair plus a
+// DocumentReference per file with a file:// attachment url.
+// ---------------------------------------------------------------------------
+
+const FASTQ_SAMPLE_READS = 10000;
+const FASTQ_HASH_BYTES = 64 * 1024 * 1024;
+
+function isLocalFileReferenceAllowed() {
+  return get(Meteor, 'settings.private.genomics.allowLocalFileReference', false) === true;
+}
+
+// Stream the first sampleReads FASTQ records (gunzipping when needed) and
+// summarize read lengths. Resolves early by destroying the source stream.
+function sampleFastqFile(path, sampleReads) {
+  return new Promise(function(resolve, reject) {
+    const maxLines = sampleReads * 4;
+    const lines = [];
+    const source = nodeFs.createReadStream(path);
+    const input = /\.gz$/i.test(path) ? source.pipe(nodeZlib.createGunzip()) : source;
+    const reader = nodeReadline.createInterface({ input: input, crlfDelay: Infinity });
+    let settled = false;
+
+    function finish() {
+      if (settled) { return; }
+      settled = true;
+      reader.close();
+      source.destroy();
+      resolve(fastqStats.summarizeReads(lines));
+    }
+
+    reader.on('line', function(line) {
+      lines.push(line);
+      if (lines.length >= maxLines) {
+        finish();
+      }
+    });
+    reader.on('close', finish);
+    source.on('error', function(error) {
+      if (settled) { return; }
+      settled = true;
+      reject(error);
+    });
+    input.on('error', function(error) {
+      // Truncated gzip streams error when we destroy the source mid-file —
+      // if we already have sample lines, that is expected, not a failure.
+      if (settled) { return; }
+      if (lines.length > 0) {
+        finish();
+      } else {
+        settled = true;
+        reject(error);
+      }
+    });
+  });
+}
+
+// sha256 of the first FASTQ_HASH_BYTES raw bytes — a stable content
+// fingerprint that never requires reading the whole 123GB file.
+function partialSha256(path, byteCount) {
+  return new Promise(function(resolve, reject) {
+    const hash = nodeCrypto.createHash('sha256');
+    const stream = nodeFs.createReadStream(path, { start: 0, end: byteCount - 1 });
+    stream.on('data', function(chunk) { hash.update(chunk); });
+    stream.on('end', function() { resolve(hash.digest('hex')); });
+    stream.on('error', reject);
+  });
+}
+
+function fastqContentType(path) {
+  return /\.gz$/i.test(path) ? 'application/gzip' : 'text/x-fastq';
+}
+
+Meteor.ServerMethods.define('genomics.checkLocalFileReferenceSetting', {
+  description: 'Check whether reference-only import of local genomics files is enabled on this deployment.',
+  requireAuth: true,
+  phi: false,
+  schemaObject: { type: 'object', properties: {} }
+}, async function() {
+  return { allowLocalFileReference: isLocalFileReferenceAllowed() };
+});
+
+Meteor.ServerMethods.define('genomics.referenceLocalGenomicsFiles', {
+  description: 'Reference local FASTQ/WGS files by absolute path (no copy): stat + sampled read stats + partial checksum into MolecularSequence + DocumentReference records.',
+  requireAuth: true,
+  phi: true,
+  schemaObject: {
+    type: 'object',
+    properties: {
+      paths: { type: 'array', items: { type: 'string' } },
+      patientId: { type: 'string' },
+      patientDisplay: { type: 'string' }
+    },
+    required: ['paths', 'patientId']
+  }
+}, async function(params, context) {
+  if (!isLocalFileReferenceAllowed()) {
+    throw new Meteor.Error('feature-disabled',
+      'Local genomics file referencing is disabled. Set Meteor.settings.private.genomics.allowLocalFileReference to true.');
+  }
+
+  const paths = get(params, 'paths', []).filter(function(path) {
+    return typeof path === 'string' && path.length > 0;
+  });
+  const patientId = get(params, 'patientId');
+  const patientDisplay = get(params, 'patientDisplay', '');
+  if (paths.length === 0) {
+    throw new Meteor.Error('no-paths', 'No file paths provided');
+  }
+
+  const importRunId = Random.id();
+  const now = new Date();
+
+  await upsertGenomicsImportRun(importRunId, {
+    _id: importRunId,
+    status: 'active',
+    importType: GENOMICS_IMPORT_TYPE,
+    origin: 'genome-central-fastq',
+    filenames: paths.map(function(path) { return path.split('/').pop(); }),
+    userId: context.userId || null,
+    patientId: patientId || null,
+    resourceCounts: {},
+    gridfsFileIds: [],
+    createdAt: now
+  });
+
+  // Stat + sample + fingerprint each file (reference-only — no copying)
+  const fileInfos = {};
+  for (const path of paths) {
+    const stat = await nodeFs.promises.stat(path);
+    let stats = { reads: 0, meanLen: 0, minLen: 0, maxLen: 0 };
+    try {
+      stats = await sampleFastqFile(path, FASTQ_SAMPLE_READS);
+    } catch (sampleError) {
+      log.warn && log.warn('FASTQ sampling failed; referencing without read stats', { path: path, error: sampleError.message });
+    }
+    const sha256Prefix = await partialSha256(path, Math.min(FASTQ_HASH_BYTES, stat.size));
+    const isGzip = /\.gz$/i.test(path);
+    fileInfos[path] = {
+      path: path,
+      filename: path.split('/').pop(),
+      fileBytes: stat.size,
+      modifiedAt: stat.mtime.toISOString(),
+      sampledReads: stats.reads,
+      meanReadLen: stats.meanLen,
+      minReadLen: stats.minLen,
+      maxReadLen: stats.maxLen,
+      // Only estimable from uncompressed byte counts
+      estReadCount: isGzip ? 0 : fastqStats.estimateReadCount(stats, stat.size),
+      sha256First64MB: sha256Prefix
+    };
+  }
+
+  const DocumentReferences = get(global, 'Collections.DocumentReferences');
+  const MolecularSequences = get(global, 'Collections.MolecularSequences');
+  const createdDocumentReferenceIds = [];
+  const createdMolecularSequenceIds = [];
+
+  // One DocumentReference per file
+  for (const path of paths) {
+    if (!DocumentReferences) { break; }
+    const info = fileInfos[path];
+    const docRefId = Random.id();
+    const docRef = applyGenomicsRunTags({
+      _id: docRefId,
+      id: docRefId,
+      resourceType: 'DocumentReference',
+      status: 'current',
+      type: {
+        coding: [{ system: 'http://loinc.org', code: '51969-4', display: 'Genetic analysis summary report' }],
+        text: 'Whole genome sequencing reads (FASTQ)'
+      },
+      subject: { reference: 'Patient/' + patientId, display: patientDisplay },
+      date: now.toISOString(),
+      description: info.filename,
+      content: [{
+        attachment: {
+          contentType: fastqContentType(path),
+          title: info.filename,
+          size: info.fileBytes,
+          url: 'file://' + path
+        }
+      }],
+      extension: [
+        { url: 'urn:honeycomb:genomics:partial-sha256', valueString: info.sha256First64MB },
+        { url: 'urn:honeycomb:genomics:stream-stats', valueString: JSON.stringify(info) }
+      ]
+    }, importRunId);
+    try {
+      await DocumentReferences.insertAsync(docRef);
+      createdDocumentReferenceIds.push(docRefId);
+    } catch (docRefError) {
+      log.warn && log.warn('FASTQ DocumentReference insert failed', { path: path, error: docRefError.message });
+    }
+  }
+
+  // One MolecularSequence per R1/R2 pair (singletons get their own)
+  const pairs = fastqStats.pairFastqPaths(paths);
+  for (const pair of pairs) {
+    if (!MolecularSequences) { break; }
+    const members = [pair.r1, pair.r2].filter(Boolean);
+    const sequenceId = Random.id();
+    const repository = members.map(function(path, index) {
+      return {
+        type: 'directlink',
+        url: 'file://' + path,
+        name: 'FASTQ ' + (members.length > 1 ? 'R' + (index + 1) : 'reads'),
+        datasetId: fileInfos[path].sha256First64MB.slice(0, 16)
+      };
+    });
+    const combinedStats = members.map(function(path) { return fileInfos[path]; });
+    const sequence = applyGenomicsRunTags({
+      _id: sequenceId,
+      id: sequenceId,
+      resourceType: 'MolecularSequence',
+      type: 'dna',
+      coordinateSystem: 0,
+      patient: { reference: 'Patient/' + patientId, display: patientDisplay },
+      device: { display: 'Whole genome sequencing (30x WGS)' },
+      readCoverage: 30,
+      repository: repository,
+      extension: [
+        { url: 'urn:honeycomb:genomics:stream-stats', valueString: JSON.stringify(combinedStats) }
+      ]
+    }, importRunId);
+    try {
+      await MolecularSequences.insertAsync(sequence);
+      createdMolecularSequenceIds.push(sequenceId);
+    } catch (sequenceError) {
+      log.warn && log.warn('FASTQ MolecularSequence insert failed', { importRunId: importRunId, error: sequenceError.message });
+    }
+  }
+
+  await upsertGenomicsImportRun(importRunId, {
+    status: 'completed',
+    completedAt: new Date(),
+    resourceCounts: {
+      MolecularSequences: createdMolecularSequenceIds.length,
+      DocumentReferences: createdDocumentReferenceIds.length
+    }
+  });
+
+  log.info && log.info('Referenced local genomics files', {
+    importRunId: importRunId,
+    files: paths.length,
+    sequences: createdMolecularSequenceIds.length
+  });
+
+  return {
+    importRunId: importRunId,
+    files: Object.values(fileInfos),
+    molecularSequenceIds: createdMolecularSequenceIds,
+    documentReferenceIds: createdDocumentReferenceIds
   };
 });
 
