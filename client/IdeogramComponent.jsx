@@ -20,6 +20,13 @@ var DARK_MODE_CSS = [
 export function Karyotype(props) {
   var isDark = props.isDark;
   var sex = props.sex || 'female';
+  // Optional annotation support (ideogram raw-annots format from
+  // lib/buildAnnotationSets.js). Parent should memoize `annotations` /
+  // `annotationTracks` — they are effect dependencies.
+  var annotations = props.annotations || null;
+  var annotationTracks = props.annotationTracks || null;
+  var annotationsLayout = props.annotationsLayout || 'tracks';
+  var assembly = props.assembly || null;
   var ideogramRef = useRef(null);
   var styleRef = useRef(null);
   var containerRef = useRef(null);
@@ -51,7 +58,7 @@ export function Karyotype(props) {
     }
 
     function constructIdeogram() {
-      ideogramRef.current = new Ideogram({
+      var config = {
         organism: 'human',
         sex: sex,
         container: '#ideogram',
@@ -88,7 +95,21 @@ export function Karyotype(props) {
         onLoadError: function(error) {
           console.error('[IdeogramComponent] Failed to load ideogram:', error);
         }
-        });
+      };
+
+      if (assembly) {
+        config.assembly = assembly;
+      }
+      if (annotations && Array.isArray(annotations.annots) && annotations.annots.length > 0) {
+        config.annotations = annotations;
+        config.annotationsLayout = annotationsLayout;
+        config.annotationHeight = 3;
+        if (annotationsLayout === 'tracks' && Array.isArray(annotationTracks)) {
+          config.annotationTracks = annotationTracks;
+        }
+      }
+
+      ideogramRef.current = new Ideogram(config);
     }
 
     initIdeogram();
@@ -108,7 +129,7 @@ export function Karyotype(props) {
         styleRef.current = null;
       }
     };
-  }, [isDark, sex]);
+  }, [isDark, sex, annotations, annotationTracks, annotationsLayout, assembly]);
 
   return <div id='ideogram' ref={containerRef} style={{ minHeight: '600px', width: '100%' }} />;
 }

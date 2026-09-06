@@ -1,16 +1,19 @@
 // packages/genome-central-redux/client/IdeogramPage.jsx
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Alert, AlertTitle, Box, Card, CardHeader, CardContent, Grid,
   ToggleButton, ToggleButtonGroup, Tooltip,
   Typography
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
+import CircleIcon from '@mui/icons-material/Circle';
 import { get } from 'lodash';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Session } from 'meteor/session';
 import { Karyotype } from './IdeogramComponent';
+import { GenomicsImportPanel } from './GenomicsImportPanel';
 import { resolveChromosomalSex } from '../lib/resolveChromosomalSex';
+import annotationBuilders from '../lib/buildAnnotationSets';
 let useAppTheme;
 let FhirUtilities;
 let SpecimensTable;
@@ -36,10 +39,65 @@ export function KaryotypePage() {
   const [sexOverride, setSexOverride] = useState(null);
   const [specimensPage, setSpecimensPage] = useState(0);
 
+  // Precomputed annotation tracks for the selected patient (server-side
+  // aggregates — the client never touches the 600K genotype rows).
+  const [annotationSets, setAnnotationSets] = useState(null);
+  // 'both' | 'notable' | 'density' — also the fallback path if per-annot
+  // colors misbehave in tracks layout.
+  const [trackVisibility, setTrackVisibility] = useState('both');
+
   // Read selected patient from Session
   const patient = useTracker(function() {
     return Session.get('selectedPatient');
   }, []);
+
+  const fetchAnnotationSets = useCallback(async function() {
+    const patientFhirId = get(Session.get('selectedPatient'), 'id');
+    if (!patientFhirId) {
+      setAnnotationSets(null);
+      return;
+    }
+    try {
+      const result = await Meteor.rpc('genomics.getAnnotationSets', { patientId: patientFhirId });
+      setAnnotationSets(result);
+    } catch (error) {
+      console.warn('[IdeogramPage] getAnnotationSets failed:', error.message);
+      setAnnotationSets(null);
+    }
+  }, []);
+
+  const patientFhirId = get(patient, 'id');
+  useEffect(function() {
+    fetchAnnotationSets();
+  }, [patientFhirId, fetchAnnotationSets]);
+
+  // Merge the visible tracks into one raw-annots object for the ideogram.
+  const mergedAnnotations = useMemo(function() {
+    if (!annotationSets) {
+      return null;
+    }
+    const sets = [];
+    if (trackVisibility !== 'density' && get(annotationSets, 'notable')) {
+      sets.push(annotationSets.notable);
+    }
+    if (trackVisibility !== 'notable' && get(annotationSets, 'density')) {
+      sets.push(annotationSets.density);
+    }
+    return annotationBuilders.mergeAnnotationSets(sets);
+  }, [annotationSets, trackVisibility]);
+
+  const annotationTracks = useMemo(function() {
+    return [
+      { id: 'notableTrack', displayName: 'Clinically notable markers', color: annotationBuilders.NOTABLE_COLOR, shape: 'triangle' },
+      { id: 'densityTrack', displayName: 'SNP density (5Mb bins)', color: annotationBuilders.DENSITY_COLOR, shape: 'rect' }
+    ];
+  }, []);
+
+  // Positions in the imported 23andMe v4 data are GRCh37; only pin the
+  // assembly when we actually have annotations to place.
+  const annotationAssembly = mergedAnnotations
+    ? get(annotationSets, 'notable.assembly', get(annotationSets, 'density.assembly', 'GRCh37'))
+    : null;
 
   // Resolve chromosomal sex from patient data
   const resolvedSex = useMemo(function() {
@@ -59,9 +117,20 @@ export function KaryotypePage() {
     }
   }
 
-  // Fetch first MolecularSequence (no patient filter for now)
+  // Fetch the selected patient's MolecularSequence, falling back to any DNA
+  // sequence when no patient-scoped record exists.
   const sequenceBaseline = useTracker(function() {
     if (MolecularSequences) {
+      const fhirId = get(Session.get('selectedPatient'), 'id');
+      if (fhirId) {
+        const patientSequence = MolecularSequences.findOne({
+          type: 'dna',
+          'patient.reference': 'Patient/' + fhirId
+        });
+        if (patientSequence) {
+          return patientSequence;
+        }
+      }
       return MolecularSequences.findOne({ type: 'dna' });
     }
     return null;
@@ -85,6 +154,7 @@ export function KaryotypePage() {
       <Grid container spacing={2}>
         <Grid item xs={12} md={3} sx={{ display: 'flex' }}>
           <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', gap: 2 }}>
+            <GenomicsImportPanel onImportComplete={fetchAnnotationSets} />
             <Card sx={{
               bgcolor: 'background.paper',
               color: 'text.primary'
@@ -264,6 +334,7 @@ export function KaryotypePage() {
           </Box>
         </Grid>
         <Grid item xs={12} md={5}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <Card sx={{
             bgcolor: 'background.paper',
             color: 'text.primary'
@@ -309,9 +380,81 @@ export function KaryotypePage() {
               }
             />
             <CardContent sx={{ bgcolor: 'background.paper', minHeight: '600px' }}>
-              <Karyotype isDark={isDark} sex={effectiveSex} />
+              <Karyotype
+                isDark={isDark}
+                sex={effectiveSex}
+                annotations={mergedAnnotations}
+                annotationTracks={annotationTracks}
+                assembly={annotationAssembly}
+              />
             </CardContent>
           </Card>
+          {annotationSets && (get(annotationSets, 'notable') || get(annotationSets, 'density')) && (
+            <Card sx={{ bgcolor: 'background.paper', color: 'text.primary' }}>
+              <CardHeader
+                title="Annotation Tracks"
+                action={
+                  <ToggleButtonGroup
+                    value={trackVisibility}
+                    exclusive
+                    size="small"
+                    onChange={function(event, newValue) {
+                      if (newValue) {
+                        setTrackVisibility(newValue);
+                      }
+                    }}
+                    sx={{
+                      '& .MuiToggleButton-root': {
+                        color: 'text.secondary',
+                        borderColor: 'divider',
+                        textTransform: 'none',
+                        px: 1.5,
+                        py: 0.25,
+                        fontSize: '0.75rem'
+                      }
+                    }}
+                  >
+                    <ToggleButton value="both">Both</ToggleButton>
+                    <ToggleButton value="notable">Markers</ToggleButton>
+                    <ToggleButton value="density">Density</ToggleButton>
+                  </ToggleButtonGroup>
+                }
+              />
+              <CardContent>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <CircleIcon sx={{ fontSize: 12, color: annotationBuilders.NOTABLE_COLOR }} />
+                    <Typography variant="body2">
+                      Clinically notable markers
+                      {get(annotationSets, 'notable.totals.notableCount') !== undefined
+                        ? ' (' + get(annotationSets, 'notable.totals.notableCount') + ')' : ''}
+                    </Typography>
+                  </Box>
+                  {get(annotationSets, 'reportAnnotsAdded', 0) > 0 && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <CircleIcon sx={{ fontSize: 12, color: '#f57c00' }} />
+                      <Typography variant="body2">
+                        Report-derived variants ({get(annotationSets, 'reportAnnotsAdded')})
+                      </Typography>
+                    </Box>
+                  )}
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <CircleIcon sx={{ fontSize: 12, color: annotationBuilders.DENSITY_COLOR }} />
+                    <Typography variant="body2">
+                      SNP density, 5Mb bins
+                      {get(annotationSets, 'density.totals.snpCount') !== undefined
+                        ? ' (' + Number(get(annotationSets, 'density.totals.snpCount')).toLocaleString() + ' SNPs)' : ''}
+                    </Typography>
+                  </Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Assembly {annotationAssembly || 'GRCh38 (default)'} · positions from the
+                    imported genotype file
+                  </Typography>
+                </Box>
+              </CardContent>
+            </Card>
+          )}
+          </Box>
         </Grid>
       </Grid>
     </Box>
