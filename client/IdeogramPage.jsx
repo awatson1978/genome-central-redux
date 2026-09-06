@@ -1,12 +1,13 @@
 // packages/genome-central-redux/client/IdeogramPage.jsx
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
-  Alert, AlertTitle, Box, Card, CardHeader, CardContent, Grid,
-  ToggleButton, ToggleButtonGroup, Tooltip,
+  Alert, AlertTitle, Box, Card, CardHeader, CardContent, Collapse, Grid,
+  IconButton, ToggleButton, ToggleButtonGroup, Tooltip,
   Typography
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import CircleIcon from '@mui/icons-material/Circle';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { get } from 'lodash';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Session } from 'meteor/session';
@@ -45,6 +46,10 @@ export function KaryotypePage() {
   // 'both' | 'notable' | 'density' — also the fallback path if per-annot
   // colors misbehave in tracks layout.
   const [trackVisibility, setTrackVisibility] = useState('both');
+
+  // Expand/collapse for the sequence-details section of the Genetic
+  // Sequence Baseline card.
+  const [baselineDetailsExpanded, setBaselineDetailsExpanded] = useState(false);
 
   // Last-clicked ideogram annotation ({ name, chr, start, ... }) — shown in
   // the Annotation Tracks card.
@@ -167,30 +172,6 @@ export function KaryotypePage() {
           <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', gap: 2 }}>
             <GenomicsImportPanel onImportComplete={fetchAnnotationSets} />
             <Card sx={{
-              bgcolor: 'background.paper',
-              color: 'text.primary'
-            }}>
-              <CardHeader title="Genetic Sequence Baseline" />
-              <CardContent>
-                {sequenceBaseline ? (
-                  <Alert severity="info">
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      {get(sequenceBaseline, 'type', 'Unknown').toUpperCase()} Sequence
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {get(sequenceBaseline, 'referenceSeq.referenceSeqId.text',
-                        get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.display', 'No reference sequence'))}
-                    </Typography>
-                  </Alert>
-                ) : (
-                  <Alert severity="info">
-                    <AlertTitle>No sequence baseline</AlertTitle>
-                    Import a MolecularSequence resource to establish a genetic baseline for comparison.
-                  </Alert>
-                )}
-              </CardContent>
-            </Card>
-            <Card sx={{
               flex: 1,
               display: 'flex',
               flexDirection: 'column',
@@ -234,53 +215,83 @@ export function KaryotypePage() {
               bgcolor: 'background.paper',
               color: 'text.primary'
             }}>
-              <CardHeader title="Sequence Detail" />
+              <CardHeader
+                title="Genetic Sequence Baseline"
+                action={sequenceBaseline ? (
+                  <IconButton
+                    id="baselineDetailsToggle"
+                    size="small"
+                    aria-label={baselineDetailsExpanded ? 'Hide sequence details' : 'Show sequence details'}
+                    onClick={function() { setBaselineDetailsExpanded(!baselineDetailsExpanded); }}
+                    sx={{
+                      transform: baselineDetailsExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                      transition: 'transform 0.2s'
+                    }}
+                  >
+                    <ExpandMoreIcon />
+                  </IconButton>
+                ) : null}
+              />
               <CardContent>
                 {sequenceBaseline ? (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Type</Typography>
-                      <Typography variant="body2">{get(sequenceBaseline, 'type', 'Unknown').toUpperCase()}</Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Coordinate System</Typography>
-                      <Typography variant="body2">{get(sequenceBaseline, 'coordinateSystem', 'N/A')}</Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Reference Sequence ID</Typography>
-                      <Typography variant="body2">
-                        {get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.code',
-                          get(sequenceBaseline, 'referenceSeq.referenceSeqId.text', 'N/A'))}
+                  <Box>
+                    <Alert severity="info">
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {get(sequenceBaseline, 'type', 'Unknown').toUpperCase()} Sequence
                       </Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Reference Sequence</Typography>
-                      <Typography variant="body2">
+                      <Typography variant="caption" color="text.secondary">
                         {get(sequenceBaseline, 'referenceSeq.referenceSeqId.text',
-                          get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.display', 'N/A'))}
+                          get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.display', 'No reference sequence'))}
                       </Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Read Coverage</Typography>
-                      <Typography variant="body2">{get(sequenceBaseline, 'readCoverage', 'N/A')}</Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Patient Reference</Typography>
-                      <Typography variant="body2">{get(sequenceBaseline, 'patient.reference', 'N/A')}</Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Specimen Reference</Typography>
-                      <Typography variant="body2">{get(sequenceBaseline, 'specimen.reference', 'N/A')}</Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Device Reference</Typography>
-                      <Typography variant="body2">{get(sequenceBaseline, 'device.reference', 'N/A')}</Typography>
-                    </Box>
+                    </Alert>
+                    <Collapse in={baselineDetailsExpanded}>
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mt: 2 }}>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Type</Typography>
+                          <Typography variant="body2">{get(sequenceBaseline, 'type', 'Unknown').toUpperCase()}</Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Coordinate System</Typography>
+                          <Typography variant="body2">{get(sequenceBaseline, 'coordinateSystem', 'N/A')}</Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Reference Sequence ID</Typography>
+                          <Typography variant="body2">
+                            {get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.code',
+                              get(sequenceBaseline, 'referenceSeq.referenceSeqId.text', 'N/A'))}
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Reference Sequence</Typography>
+                          <Typography variant="body2">
+                            {get(sequenceBaseline, 'referenceSeq.referenceSeqId.text',
+                              get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.display', 'N/A'))}
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Read Coverage</Typography>
+                          <Typography variant="body2">{get(sequenceBaseline, 'readCoverage', 'N/A')}</Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Patient Reference</Typography>
+                          <Typography variant="body2">{get(sequenceBaseline, 'patient.reference', 'N/A')}</Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Specimen Reference</Typography>
+                          <Typography variant="body2">{get(sequenceBaseline, 'specimen.reference', 'N/A')}</Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Device Reference</Typography>
+                          <Typography variant="body2">{get(sequenceBaseline, 'device.reference', 'N/A')}</Typography>
+                        </Box>
+                      </Box>
+                    </Collapse>
                   </Box>
                 ) : (
-                  <Typography variant="body2" color="text.secondary">
-                    No MolecularSequence data available.
-                  </Typography>
+                  <Alert severity="info">
+                    <AlertTitle>No sequence baseline</AlertTitle>
+                    Import a MolecularSequence resource to establish a genetic baseline for comparison.
+                  </Alert>
                 )}
               </CardContent>
             </Card>
