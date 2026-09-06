@@ -46,6 +46,17 @@ export function KaryotypePage() {
   // colors misbehave in tracks layout.
   const [trackVisibility, setTrackVisibility] = useState('both');
 
+  // Last-clicked ideogram annotation ({ name, chr, start, ... }) — shown in
+  // the Annotation Tracks card.
+  const [clickedAnnot, setClickedAnnot] = useState(null);
+  const handleAnnotClick = useCallback(function(annot) {
+    setClickedAnnot({
+      name: get(annot, 'name', ''),
+      chr: get(annot, 'chr', ''),
+      start: get(annot, 'start', null)
+    });
+  }, []);
+
   // Read selected patient from Session
   const patient = useTracker(function() {
     return Session.get('selectedPatient');
@@ -386,6 +397,7 @@ export function KaryotypePage() {
                 annotations={mergedAnnotations}
                 annotationTracks={annotationTracks}
                 assembly={annotationAssembly}
+                onAnnotClick={handleAnnotClick}
               />
             </CardContent>
           </Card>
@@ -446,6 +458,19 @@ export function KaryotypePage() {
                         ? ' (' + Number(get(annotationSets, 'density.totals.snpCount')).toLocaleString() + ' SNPs)' : ''}
                     </Typography>
                   </Box>
+                  {clickedAnnot && (
+                    <Alert severity="info" sx={{ mt: 1 }} onClose={function() { setClickedAnnot(null); }}>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {clickedAnnot.name}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        chr{clickedAnnot.chr}
+                        {clickedAnnot.start !== null
+                          ? ' · ' + Number(clickedAnnot.start).toLocaleString() + ' bp'
+                          : ''}
+                      </Typography>
+                    </Alert>
+                  )}
                   <Typography variant="caption" color="text.secondary">
                     Assembly {annotationAssembly || 'GRCh38 (default)'} · positions from the
                     imported genotype file

@@ -31,6 +31,14 @@ export function Karyotype(props) {
   var styleRef = useRef(null);
   var containerRef = useRef(null);
 
+  // Ideogram attaches a click handler to every annotation but only assigns
+  // onClickAnnotCallback when the config provides onClickAnnot — clicking a
+  // marker without one throws "this.onClickAnnotCallback is not a function".
+  // Ride the prop through a ref so handler-identity changes never re-init
+  // the whole karyotype.
+  var onAnnotClickRef = useRef(null);
+  onAnnotClickRef.current = props.onAnnotClick || null;
+
   useEffect(function() {
     var cancelled = false;
     var rafId = null;
@@ -107,6 +115,11 @@ export function Karyotype(props) {
         if (annotationsLayout === 'tracks' && Array.isArray(annotationTracks)) {
           config.annotationTracks = annotationTracks;
         }
+        config.onClickAnnot = function(annot) {
+          if (onAnnotClickRef.current) {
+            onAnnotClickRef.current(annot);
+          }
+        };
       }
 
       ideogramRef.current = new Ideogram(config);
