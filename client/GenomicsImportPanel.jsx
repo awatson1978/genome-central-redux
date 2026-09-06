@@ -27,6 +27,9 @@ const APPROX_BYTES_PER_LINE = 24;
 
 export function GenomicsImportPanel(props) {
   const onImportComplete = props.onImportComplete;
+  // Optional: a File handed in by another surface (data-importer's /import-data
+  // drop zone) — adopted as if chosen through the file input.
+  const initialFile = props.initialFile;
 
   const [selectedFile, setSelectedFile] = useState(null);
   const [sniffResult, setSniffResult] = useState(null); // null | true | false
@@ -104,8 +107,7 @@ export function GenomicsImportPanel(props) {
     }
   }
 
-  async function handleFileChange(event) {
-    const file = get(event, 'target.files.0');
+  async function adoptFile(file) {
     setImportError('');
     setCompletedCounts(null);
     if (!file) {
@@ -117,6 +119,16 @@ export function GenomicsImportPanel(props) {
     setSelectedFile(file);
     setSniffResult(parse23andMe.sniff23andMeHeader(headText));
   }
+
+  async function handleFileChange(event) {
+    await adoptFile(get(event, 'target.files.0'));
+  }
+
+  useEffect(function() {
+    if (initialFile) {
+      adoptFile(initialFile);
+    }
+  }, [initialFile]);
 
   function readFileAsBase64(file) {
     return new Promise(function(resolve, reject) {
