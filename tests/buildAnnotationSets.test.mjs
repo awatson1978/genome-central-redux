@@ -92,6 +92,22 @@ test('buildDensityAnnots clamps the final bin to the chromosome end (bp-out-of-r
   assert.equal(annot[1] + annot[2], chr1Length, 'start+length exactly reaches the chromosome end');
 });
 
+test('bin 0 starts at bp 1, not 0 (ideogram bands are 1-based; bp-0 regression)', function() {
+  const binSize = 5000000;
+  const set = builders.buildDensityAnnots([{ chromosome: '1', bin: 0, count: 10 }], binSize);
+  const annot = set.annots[0].annots[0];
+  assert.equal(annot[1], 1, 'first bin start floors at 1');
+  assert.equal(annot[2], binSize);
+
+  const stored = {
+    keys: builders.ANNOTATION_KEYS.slice(),
+    annots: [{ chr: '1', annots: [['zero-start bin', 0, binSize, 1, '#5c6bc0']] }]
+  };
+  const clamped = builders.clampAnnotationSet(stored);
+  assert.equal(clamped.annots[0].annots[0][1], 1, 'read-side clamp raises bp 0 to 1');
+  assert.equal(clamped.annots[0].annots[0][2], binSize - 1, 'length shrinks to preserve the end');
+});
+
 test('clampAnnotationSet repairs stored sets that overrun chromosome bounds', function() {
   const chr1Length = builders.CHR_LENGTHS_GRCH37['1'];
   const stored = {
