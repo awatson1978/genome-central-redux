@@ -117,6 +117,67 @@ async function upsertGenomicsImportRun(importRunId, fields) {
 }
 
 // ---------------------------------------------------------------------------
+// Cache primitives. MyGenotype is a SINGLE-OCCUPANCY cache: it holds at most
+// one patient's genome at a time. The durable per-patient record — the
+// MolecularSequence, the DocumentReference + raw txt in GridFS, and the
+// GenomeAnnotationSets summary tracks — survives eviction; the retained raw
+// file is the reload source (genomics.loadGenotypeCache).
+// ---------------------------------------------------------------------------
+
+// Evict whatever genome currently occupies the cache.
+async function evictGenotypeCache(reason) {
+  const result = await MyGenotype.rawCollection().deleteMany({});
+  const evicted = get(result, 'deletedCount', 0);
+  if (evicted > 0) {
+    log.info && log.info('Evicted genotype cache', { evictedRows: evicted, reason: reason });
+  } else {
+    log.info && log.info('Genotype cache already empty', { reason: reason });
+  }
+  return evicted;
+}
+
+// Parse 23andMe text and batch-insert MyGenotype rows. Shared by the initial
+// import (runSnpImport) and the cache-reload path (runCacheReload).
+async function insertGenotypeRows(options) {
+  const fileText = options.fileText;
+  const patientId = options.patientId;
+  const rowTag = options.rowTag;
+  const onProgress = options.onProgress;
+
+  const rawGenotypes = MyGenotype.rawCollection();
+  const lines = fileText.split('\n');
+  let batch = [];
+  let insertedRows = 0;
+  let skipped = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const row = parse23andMe.parse23andMeLine(lines[i]);
+    if (!row) {
+      skipped++;
+      continue;
+    }
+    row._id = Random.id();
+    row.patientId = patientId;
+    row.meta = { tag: rowTag };
+    batch.push(row);
+
+    if (batch.length >= INSERT_BATCH_SIZE) {
+      await rawGenotypes.insertMany(batch, { ordered: false });
+      insertedRows += batch.length;
+      batch = [];
+      if (onProgress) {
+        await onProgress(insertedRows);
+      }
+    }
+  }
+  if (batch.length > 0) {
+    await rawGenotypes.insertMany(batch, { ordered: false });
+    insertedRows += batch.length;
+  }
+  return { insertedRows: insertedRows, skipped: skipped };
+}
+
+// ---------------------------------------------------------------------------
 // Deferred worker: parse the uploaded text, batch-insert MyGenotype rows,
 // then build the derived artifacts. Runs outside the request so the 15 MB /
 // 600K-row file never blocks the RPC response.
@@ -132,41 +193,27 @@ async function runSnpImport(options) {
 
   try {
     const rowTag = buildRowRunTag(importRunId);
-    const rawGenotypes = MyGenotype.rawCollection();
 
-    const lines = fileText.split('\n');
-    let batch = [];
-    let insertedRows = 0;
-    let skipped = 0;
+    // Single-occupancy: evict any previously loaded genome (this patient's
+    // earlier runs or another patient's) so the cache holds exactly one
+    // genome after every import.
+    await evictGenotypeCache('import:' + importRunId);
 
-    for (let i = 0; i < lines.length; i++) {
-      const row = parse23andMe.parse23andMeLine(lines[i]);
-      if (!row) {
-        skipped++;
-        continue;
-      }
-      row._id = Random.id();
-      row.patientId = patientId;
-      row.meta = { tag: rowTag };
-      batch.push(row);
-
-      if (batch.length >= INSERT_BATCH_SIZE) {
-        await rawGenotypes.insertMany(batch, { ordered: false });
-        insertedRows += batch.length;
-        batch = [];
+    const parsed = await insertGenotypeRows({
+      fileText: fileText,
+      patientId: patientId,
+      rowTag: rowTag,
+      onProgress: async function(insertedRows) {
         await upsertGenomicsImportRun(importRunId, {
           'progress.parsedLines': insertedRows,
           'progress.phase': 'parsing'
         });
       }
-    }
-    if (batch.length > 0) {
-      await rawGenotypes.insertMany(batch, { ordered: false });
-      insertedRows += batch.length;
-    }
+    });
+    const insertedRows = parsed.insertedRows;
 
     log.info && log.info('SNP parse complete', {
-      importRunId: importRunId, insertedRows: insertedRows, skipped: skipped
+      importRunId: importRunId, insertedRows: insertedRows, skipped: parsed.skipped
     });
     await upsertGenomicsImportRun(importRunId, {
       'progress.parsedLines': insertedRows,
@@ -193,16 +240,15 @@ async function runSnpImport(options) {
   }
 }
 
-// Build the derived artifacts once all rows are in: the two annotation-set
-// docs, the MolecularSequence, and the DocumentReference for the raw file.
-async function finalizeSnpImport(options) {
+// Build and insert the two summary-track docs (notable + density) from a
+// run's freshly inserted rows. Replaces any earlier sets for the patient
+// (the tracks are per-patient summary state, not per-run history). Shared by
+// finalizeSnpImport and runCacheReload's defensive rebuild.
+async function buildAndInsertAnnotationSets(options) {
   const importRunId = options.importRunId;
   const patientId = options.patientId;
-  const patientDisplay = options.patientDisplay;
-  const filename = options.filename;
-  const gridfsFileId = options.gridfsFileId;
-  const fileSha256 = options.fileSha256;
   const insertedRows = options.insertedRows;
+  const molecularSequenceId = options.molecularSequenceId || null;
 
   const runSelector = { 'meta.tag.code': importRunId };
 
@@ -229,7 +275,6 @@ async function finalizeSnpImport(options) {
   const densitySet = annotationBuilders.buildDensityAnnots(binCounts, DENSITY_BIN_SIZE_BP);
 
   const now = new Date();
-  const molecularSequenceId = Random.id();
 
   const notableSetDoc = applyGenomicsRunTags({
     _id: Random.id(),
@@ -259,8 +304,46 @@ async function finalizeSnpImport(options) {
     createdAt: now
   }, importRunId);
 
+  // Replace, don't accumulate: drop sets from earlier imports of this patient
+  // before inserting the fresh pair.
+  const priorSets = await GenomeAnnotationSets.removeAsync({ patientId: patientId });
+  if (priorSets > 0) {
+    log.info && log.info('Replaced prior annotation sets', { importRunId: importRunId, removedSets: priorSets });
+  }
+
   await GenomeAnnotationSets.insertAsync(notableSetDoc);
   await GenomeAnnotationSets.insertAsync(densitySetDoc);
+
+  return {
+    notableSetDoc: notableSetDoc,
+    densitySetDoc: densitySetDoc,
+    notableCount: notableSet.count,
+    densityBins: binCounts.length
+  };
+}
+
+// Build the derived artifacts once all rows are in: the two annotation-set
+// docs, the MolecularSequence, and the DocumentReference for the raw file.
+async function finalizeSnpImport(options) {
+  const importRunId = options.importRunId;
+  const patientId = options.patientId;
+  const patientDisplay = options.patientDisplay;
+  const filename = options.filename;
+  const gridfsFileId = options.gridfsFileId;
+  const fileSha256 = options.fileSha256;
+  const insertedRows = options.insertedRows;
+
+  const now = new Date();
+  const molecularSequenceId = Random.id();
+
+  const annotationSets = await buildAndInsertAnnotationSets({
+    importRunId: importRunId,
+    patientId: patientId,
+    insertedRows: insertedRows,
+    molecularSequenceId: molecularSequenceId
+  });
+  const notableSetDoc = annotationSets.notableSetDoc;
+  const densitySetDoc = annotationSets.densitySetDoc;
 
   // --- MolecularSequence for the SNP-array dataset ---
   let molecularSequenceCount = 0;
@@ -345,9 +428,12 @@ async function finalizeSnpImport(options) {
     status: 'completed',
     completedAt: new Date(),
     'progress.phase': 'completed',
+    snpCount: insertedRows,
+    // Only the durable FHIR resources count as imported "resources". The
+    // ~552K MyGenotype rows are single-occupancy cache contents and the two
+    // summary-track docs are derived state — counting them made every run
+    // read as 552,960 resources in the Runs tab.
     resourceCounts: {
-      MyGenotype: insertedRows,
-      GenomeAnnotationSets: 2,
       MolecularSequences: molecularSequenceCount,
       DocumentReferences: documentReferenceCount
     }
@@ -356,8 +442,8 @@ async function finalizeSnpImport(options) {
   log.info && log.info('SNP import finalized', {
     importRunId: importRunId,
     snpCount: insertedRows,
-    notableCount: notableSet.count,
-    densityBins: binCounts.length
+    notableCount: annotationSets.notableCount,
+    densityBins: annotationSets.densityBins
   });
 }
 
@@ -590,6 +676,181 @@ Meteor.ServerMethods.define('genomics.getAnnotationSets', {
     density: density || null,
     reportAnnotsAdded: reportAnnotsAdded
   };
+});
+
+// ---------------------------------------------------------------------------
+// Cache control. CLEAR/LOAD surface on the /my-profile Genomics card
+// (GenomicsProfilePanel): clear unloads the SNP rows while the summaries and
+// the raw GridFS file are kept; load re-parses the retained raw file back
+// into the cache for deeper analysis.
+// ---------------------------------------------------------------------------
+
+// Deferred worker for genomics.loadGenotypeCache: evict, stream the raw txt
+// out of GridFS, and re-insert the patient's rows under a fresh run tag (so
+// the reloaded rows stay flushable via importRuns.flush).
+async function runCacheReload(options) {
+  const importRunId = options.importRunId;
+  const gridfsFileId = options.gridfsFileId;
+  const patientId = options.patientId;
+
+  try {
+    const rowTag = buildRowRunTag(importRunId);
+    await evictGenotypeCache('reload:' + importRunId);
+
+    const buffer = await GenomicsGridFSManager.downloadToBuffer(gridfsFileId);
+    const fileText = buffer.toString('utf8');
+
+    const parsed = await insertGenotypeRows({
+      fileText: fileText,
+      patientId: patientId,
+      rowTag: rowTag,
+      onProgress: async function(insertedRows) {
+        await upsertGenomicsImportRun(importRunId, {
+          'progress.parsedLines': insertedRows,
+          'progress.phase': 'parsing'
+        });
+      }
+    });
+
+    // Defensive: the summary tracks normally survive eviction, but if this
+    // patient has none (e.g. after an importRuns.flush of the original run),
+    // rebuild them from the reloaded rows.
+    const existingSet = await GenomeAnnotationSets.findOneAsync({ patientId: patientId });
+    if (!existingSet) {
+      await buildAndInsertAnnotationSets({
+        importRunId: importRunId,
+        patientId: patientId,
+        insertedRows: parsed.insertedRows
+      });
+      log.info && log.info('Rebuilt missing annotation sets during cache reload', { importRunId: importRunId });
+    }
+
+    log.info && log.info('Cache reload complete', {
+      importRunId: importRunId, insertedRows: parsed.insertedRows, skipped: parsed.skipped
+    });
+    await upsertGenomicsImportRun(importRunId, {
+      status: 'completed',
+      completedAt: new Date(),
+      snpCount: parsed.insertedRows,
+      'progress.parsedLines': parsed.insertedRows,
+      'progress.phase': 'completed'
+    });
+  } catch (error) {
+    log.error && log.error('Cache reload failed', { importRunId: importRunId, error: error.message });
+    await upsertGenomicsImportRun(importRunId, {
+      status: 'failed',
+      completedAt: new Date(),
+      error: truncateErrorMessage(error.message)
+    });
+  }
+}
+
+Meteor.ServerMethods.define('genomics.getCacheStatus', {
+  description: 'Report which patient (if any) currently occupies the single-occupancy MyGenotype cache, and whether a retained raw file allows a reload.',
+  requireAuth: true,
+  phi: true,
+  schemaObject: {
+    type: 'object',
+    properties: {
+      patientIds: { type: 'array', items: { type: 'string' } }
+    },
+    required: ['patientIds']
+  }
+}, async function(params) {
+  // The aliases of ONE patient (Mongo _id + FHIR id) — rows and GridFS
+  // metadata were stamped with whichever alias the upload used.
+  const patientIds = (get(params, 'patientIds') || []).filter(Boolean);
+
+  const rowCount = await MyGenotype.rawCollection().estimatedDocumentCount();
+  let loadedPatientId = null;
+  if (rowCount > 0) {
+    const anyRow = await MyGenotype.findOneAsync({});
+    loadedPatientId = get(anyRow, 'patientId', null);
+  }
+  const loadedForPatient = Boolean(loadedPatientId) && patientIds.indexOf(loadedPatientId) !== -1;
+
+  let canReload = false;
+  if (GenomicsGridFSManager.isInitialized() && patientIds.length > 0) {
+    const latestFile = await GenomicsGridFSManager.findLatestFileForPatient(patientIds);
+    canReload = Boolean(latestFile);
+  }
+
+  return {
+    rowCount: rowCount,
+    loadedPatientId: loadedPatientId,
+    loadedForPatient: loadedForPatient,
+    canReload: canReload
+  };
+});
+
+Meteor.ServerMethods.define('genomics.clearGenotypeCache', {
+  description: 'Unload the MyGenotype cache (delete every SNP row). The summary tracks, MolecularSequence/DocumentReference records, and the raw GridFS file are kept, so the genome can be reloaded later.',
+  requireAuth: true,
+  phi: true,
+  schemaObject: { type: 'object', properties: {} }
+}, async function(params, context) {
+  const removed = await evictGenotypeCache('clear-button:' + (context.userId || 'unknown-user'));
+  return { removed: removed };
+});
+
+Meteor.ServerMethods.define('genomics.loadGenotypeCache', {
+  description: 'Reload a patient\'s genome into the MyGenotype cache by re-parsing the retained raw 23andMe txt from GridFS. Evicts whatever currently occupies the cache; creates no FHIR resources.',
+  requireAuth: true,
+  phi: true,
+  schemaObject: {
+    type: 'object',
+    properties: {
+      patientIds: { type: 'array', items: { type: 'string' } }
+    },
+    required: ['patientIds']
+  }
+}, async function(params, context) {
+  const patientIds = (get(params, 'patientIds') || []).filter(Boolean);
+  if (!GenomicsGridFSManager.isInitialized()) {
+    throw new Meteor.Error('gridfs-not-initialized',
+      'Genomics GridFS is not initialized on this deployment; there is no retained raw file to reload from.');
+  }
+  const latestFile = await GenomicsGridFSManager.findLatestFileForPatient(patientIds);
+  if (!latestFile) {
+    throw new Meteor.Error('no-raw-file',
+      'No retained raw genotype file found for this patient — re-import the 23andMe export instead.');
+  }
+
+  const filePatientId = get(latestFile, 'metadata.patientId') || patientIds[0];
+  const filename = get(latestFile, 'filename', 'genome.txt');
+  const importRunId = Random.id();
+
+  log.info && log.info('Cache reload requested', {
+    importRunId: importRunId, filename: filename, gridfsFileId: String(latestFile._id)
+  });
+
+  await upsertGenomicsImportRun(importRunId, {
+    _id: importRunId,
+    status: 'active',
+    importType: GENOMICS_IMPORT_TYPE,
+    origin: GENOMICS_IMPORT_ORIGIN,
+    filenames: [filename],
+    userId: context.userId || null,
+    patientId: filePatientId,
+    // A reload creates no FHIR resources — rows only. The raw file stays
+    // owned by the original import run (gridfsFileIds deliberately empty so
+    // flushing the reload run never deletes the retained file).
+    resourceCounts: {},
+    gridfsFileIds: [],
+    reloadOfGridfsFileId: String(latestFile._id),
+    progress: { totalBytes: get(latestFile, 'length', 0), parsedLines: 0, phase: 'parsing' },
+    createdAt: new Date()
+  });
+
+  Meteor.defer(function() {
+    runCacheReload({
+      importRunId: importRunId,
+      gridfsFileId: String(latestFile._id),
+      patientId: filePatientId
+    });
+  });
+
+  return { importRunId: importRunId };
 });
 
 // ---------------------------------------------------------------------------

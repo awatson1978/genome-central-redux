@@ -86,6 +86,46 @@ const GenomicsGridFSManager = {
     return _bucket.openDownloadStream(new ObjectId(fileId), options || {});
   },
 
+  /**
+   * Read a stored file fully into a Buffer (raw 23andMe txt ≈ 15 MB — fine
+   * to hold in memory; FASTQ never comes through this bucket).
+   */
+  async downloadToBuffer(fileId) {
+    if (!this.isInitialized()) {
+      throw new Meteor.Error('gridfs-not-initialized', 'Genomics GridFS is not initialized');
+    }
+    return new Promise(function(resolve, reject) {
+      const chunks = [];
+      const downloadStream = _bucket.openDownloadStream(new ObjectId(fileId));
+      downloadStream.on('data', function(chunk) { chunks.push(chunk); });
+      downloadStream.on('end', function() { resolve(Buffer.concat(chunks)); });
+      downloadStream.on('error', function(error) {
+        console.error('[GenomicsGridFSManager] downloadToBuffer error:', error.message);
+        reject(error);
+      });
+    });
+  },
+
+  /**
+   * Latest stored raw file for a patient. patientIds carries the aliases of
+   * ONE patient (Mongo _id + FHIR id) — metadata.patientId was stamped with
+   * whichever alias the upload used. Returns the files-collection doc or null.
+   */
+  async findLatestFileForPatient(patientIds) {
+    if (!this.isInitialized()) {
+      return null;
+    }
+    const ids = (patientIds || []).filter(Boolean);
+    if (!ids.length) {
+      return null;
+    }
+    const files = await _bucket.find({ 'metadata.patientId': { $in: ids } })
+      .sort({ uploadDate: -1 })
+      .limit(1)
+      .toArray();
+    return files.length > 0 ? files[0] : null;
+  },
+
   async deleteFile(fileId) {
     if (!this.isInitialized()) {
       return false;
