@@ -209,7 +209,7 @@ export function KaryotypePage() {
             </Card>
           </Box>
         </Grid>
-        <Grid item xs={12} md={4} sx={{ display: 'flex' }}>
+        <Grid item xs={12} md={3} sx={{ display: 'flex' }}>
           <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', gap: 2 }}>
             <Card sx={{
               bgcolor: 'background.paper',
@@ -355,7 +355,7 @@ export function KaryotypePage() {
             </Card>
           </Box>
         </Grid>
-        <Grid item xs={12} md={5}>
+        <Grid item xs={12} md={6}>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <Card sx={{
             bgcolor: 'background.paper',

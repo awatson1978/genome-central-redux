@@ -50,6 +50,7 @@ export function GenomicsImportPanel(props) {
   const [progress, setProgress] = useState(null);
   const [importError, setImportError] = useState('');
   const [completedCounts, setCompletedCounts] = useState(null);
+  const [duplicateNotice, setDuplicateNotice] = useState(false);
   const pollTimerRef = useRef(null);
 
   // FASTQ reference-only section. Tri-state settings gate:
@@ -186,6 +187,7 @@ export function GenomicsImportPanel(props) {
       return;
     }
     setImportError('');
+    setDuplicateNotice(false);
     setImporting(true);
     setProgress(null);
     try {
@@ -209,6 +211,11 @@ export function GenomicsImportPanel(props) {
         patientId: patientId,
         patientDisplay: patientDisplay
       });
+      if (get(result, 'duplicate') === true) {
+        setImporting(false);
+        setDuplicateNotice(true);
+        return;
+      }
       pollStatus(get(result, 'importRunId'));
     } catch (error) {
       setImporting(false);
@@ -291,6 +298,14 @@ export function GenomicsImportPanel(props) {
 
         {importError && (
           <Alert severity="error" sx={{ mt: 2 }}>{importError}</Alert>
+        )}
+        {duplicateNotice && (
+          <Alert severity="info" sx={{ mt: 2 }}>
+            <AlertTitle>Already imported</AlertTitle>
+            This file was already imported for this patient — its sequence
+            baseline and annotation tracks are unchanged. To re-import from
+            scratch, flush the original import run first.
+          </Alert>
         )}
         {completedCounts && (
           <Alert severity="success" sx={{ mt: 2 }}>

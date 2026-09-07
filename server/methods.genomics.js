@@ -44,6 +44,26 @@ const GENOMICS_IMPORT_ORIGIN = 'genome-central';
 const DENSITY_BIN_SIZE_BP = 5000000;
 const INSERT_BATCH_SIZE = 10000;
 
+// Whole-file sha256 of the uploaded 23andMe export, stamped as an extension on
+// the run's MolecularSequence + DocumentReference. Identity for dedup is the
+// file CONTENT, not the array description — a newer export of the same array
+// must still import, but re-uploading the identical file must not.
+const FILE_SHA_EXTENSION_URL = 'urn:honeycomb:genomics:file-sha256';
+
+// Find a prior import of the same file for the same patient. Checking
+// MolecularSequences (not ImportRuns) is self-healing: after an
+// importRuns.flush the sequence is gone, so re-import works again.
+async function findExistingSnpBaseline(patientId, fileSha256) {
+  const MolecularSequences = get(global, 'Collections.MolecularSequences');
+  if (!MolecularSequences || !fileSha256) {
+    return null;
+  }
+  return await MolecularSequences.findOneAsync({
+    'patient.reference': 'Patient/' + patientId,
+    extension: { $elemMatch: { url: FILE_SHA_EXTENSION_URL, valueString: fileSha256 } }
+  });
+}
+
 // Amber, to distinguish report-derived variant markers (PDF pipeline) from
 // the curated notable list (red) on the same ideogram track.
 const REPORT_VARIANT_COLOR = '#f57c00';
@@ -159,6 +179,7 @@ async function runSnpImport(options) {
       patientId: patientId,
       patientDisplay: patientDisplay,
       gridfsFileId: gridfsFileId,
+      fileSha256: options.fileSha256,
       userId: userId,
       insertedRows: insertedRows
     });
@@ -180,6 +201,7 @@ async function finalizeSnpImport(options) {
   const patientDisplay = options.patientDisplay;
   const filename = options.filename;
   const gridfsFileId = options.gridfsFileId;
+  const fileSha256 = options.fileSha256;
   const insertedRows = options.insertedRows;
 
   const runSelector = { 'meta.tag.code': importRunId };
@@ -244,29 +266,39 @@ async function finalizeSnpImport(options) {
   let molecularSequenceCount = 0;
   const MolecularSequences = get(global, 'Collections.MolecularSequences');
   if (MolecularSequences) {
-    const sequence = applyGenomicsRunTags({
-      _id: molecularSequenceId,
-      id: molecularSequenceId,
-      resourceType: 'MolecularSequence',
-      type: 'dna',
-      coordinateSystem: 1,
-      patient: { reference: 'Patient/' + patientId, display: patientDisplay || '' },
-      device: { display: '23andMe v4 SNP genotyping array' },
-      quantity: { value: insertedRows, unit: 'variant calls' },
-      referenceSeq: {
-        genomeBuild: 'GRCh37',
-        referenceSeqId: { text: 'GRCh37 / 23andMe v4 genotyping array' }
-      },
-      extension: [
-        { url: 'urn:honeycomb:genomics:annotation-sets', valueString: notableSetDoc._id + ',' + densitySetDoc._id },
-        { url: 'urn:honeycomb:genomics:gridfs', valueString: gridfsFileId ? 'gridfs://genomics/' + gridfsFileId : '' }
-      ]
-    }, importRunId);
-    try {
-      await MolecularSequences.insertAsync(sequence);
-      molecularSequenceCount = 1;
-    } catch (sequenceError) {
-      log.warn && log.warn('MolecularSequence insert failed', { importRunId: importRunId, error: sequenceError.message });
+    // Race guard: a double-submit can slip two runs past the method-level
+    // dedup check before either worker finishes — recheck just before insert.
+    const racedBaseline = await findExistingSnpBaseline(patientId, fileSha256);
+    if (racedBaseline) {
+      log.warn && log.warn('Concurrent duplicate import detected; skipping MolecularSequence insert', {
+        importRunId: importRunId, existingSequenceId: racedBaseline._id
+      });
+    } else {
+      const sequence = applyGenomicsRunTags({
+        _id: molecularSequenceId,
+        id: molecularSequenceId,
+        resourceType: 'MolecularSequence',
+        type: 'dna',
+        coordinateSystem: 1,
+        patient: { reference: 'Patient/' + patientId, display: patientDisplay || '' },
+        device: { display: '23andMe v4 SNP genotyping array' },
+        quantity: { value: insertedRows, unit: 'variant calls' },
+        referenceSeq: {
+          genomeBuild: 'GRCh37',
+          referenceSeqId: { text: 'GRCh37 / 23andMe v4 genotyping array' }
+        },
+        extension: [
+          { url: 'urn:honeycomb:genomics:annotation-sets', valueString: notableSetDoc._id + ',' + densitySetDoc._id },
+          { url: 'urn:honeycomb:genomics:gridfs', valueString: gridfsFileId ? 'gridfs://genomics/' + gridfsFileId : '' },
+          { url: FILE_SHA_EXTENSION_URL, valueString: fileSha256 || '' }
+        ]
+      }, importRunId);
+      try {
+        await MolecularSequences.insertAsync(sequence);
+        molecularSequenceCount = 1;
+      } catch (sequenceError) {
+        log.warn && log.warn('MolecularSequence insert failed', { importRunId: importRunId, error: sequenceError.message });
+      }
     }
   }
 
@@ -296,7 +328,10 @@ async function finalizeSnpImport(options) {
           contentType: 'text/plain',
           title: filename
         }, gridfsFileId ? { url: 'gridfs://genomics/' + gridfsFileId } : {})
-      }]
+      }],
+      extension: [
+        { url: FILE_SHA_EXTENSION_URL, valueString: fileSha256 || '' }
+      ]
     }, importRunId);
     try {
       await DocumentReferences.insertAsync(docRef);
@@ -364,6 +399,21 @@ Meteor.ServerMethods.define('genomics.uploadAndImport23andMe', {
       'File does not look like a 23andMe raw genotype export (missing header banner / rsid column line)');
   }
 
+  // Dedup guard: the identical file already imported for this patient is a
+  // no-op, not a new run (each run would otherwise duplicate ~600K rows).
+  const fileSha256 = nodeCrypto.createHash('sha256').update(fileBuffer).digest('hex');
+  const existingBaseline = await findExistingSnpBaseline(patientId, fileSha256);
+  if (existingBaseline) {
+    log.info && log.info('Duplicate 23andMe upload skipped', {
+      patientId: patientId, molecularSequenceId: existingBaseline._id
+    });
+    return {
+      duplicate: true,
+      importRunId: null,
+      molecularSequenceId: existingBaseline._id
+    };
+  }
+
   // Mint the run id up front — it stamps the GridFS file, every row, and
   // every derived resource.
   const importRunId = Random.id();
@@ -398,6 +448,7 @@ Meteor.ServerMethods.define('genomics.uploadAndImport23andMe', {
     patientId: patientId || null,
     resourceCounts: {},
     gridfsFileIds: gridfsFileId ? [gridfsFileId] : [],
+    fileSha256: fileSha256,
     progress: { totalBytes: fileBuffer.length, parsedLines: 0, phase: 'parsing' },
     createdAt: new Date()
   });
@@ -412,6 +463,7 @@ Meteor.ServerMethods.define('genomics.uploadAndImport23andMe', {
       patientId: patientId,
       patientDisplay: patientDisplay,
       gridfsFileId: gridfsFileId,
+      fileSha256: fileSha256,
       userId: context.userId
     });
   });
@@ -700,10 +752,23 @@ Meteor.ServerMethods.define('genomics.referenceLocalGenomicsFiles', {
   const createdDocumentReferenceIds = [];
   const createdMolecularSequenceIds = [];
 
-  // One DocumentReference per file
+  let skippedDocumentReferences = 0;
+  let skippedMolecularSequences = 0;
+
+  // One DocumentReference per file — skip files whose partial fingerprint is
+  // already referenced for this patient (re-running the same directory pick
+  // must not duplicate records).
   for (const path of paths) {
     if (!DocumentReferences) { break; }
     const info = fileInfos[path];
+    const existingDocRef = await DocumentReferences.findOneAsync({
+      'subject.reference': 'Patient/' + patientId,
+      extension: { $elemMatch: { url: 'urn:honeycomb:genomics:partial-sha256', valueString: info.sha256First64MB } }
+    });
+    if (existingDocRef) {
+      skippedDocumentReferences++;
+      continue;
+    }
     const docRefId = Random.id();
     const docRef = applyGenomicsRunTags({
       _id: docRefId,
@@ -743,6 +808,17 @@ Meteor.ServerMethods.define('genomics.referenceLocalGenomicsFiles', {
   for (const pair of pairs) {
     if (!MolecularSequences) { break; }
     const members = [pair.r1, pair.r2].filter(Boolean);
+    const datasetIds = members.map(function(path) {
+      return fileInfos[path].sha256First64MB.slice(0, 16);
+    });
+    const existingSequence = await MolecularSequences.findOneAsync({
+      'patient.reference': 'Patient/' + patientId,
+      'repository.datasetId': { $in: datasetIds }
+    });
+    if (existingSequence) {
+      skippedMolecularSequences++;
+      continue;
+    }
     const sequenceId = Random.id();
     const repository = members.map(function(path, index) {
       return {
@@ -787,14 +863,20 @@ Meteor.ServerMethods.define('genomics.referenceLocalGenomicsFiles', {
   log.info && log.info('Referenced local genomics files', {
     importRunId: importRunId,
     files: paths.length,
-    sequences: createdMolecularSequenceIds.length
+    sequences: createdMolecularSequenceIds.length,
+    skippedSequences: skippedMolecularSequences,
+    skippedDocumentReferences: skippedDocumentReferences
   });
 
   return {
     importRunId: importRunId,
     files: Object.values(fileInfos),
     molecularSequenceIds: createdMolecularSequenceIds,
-    documentReferenceIds: createdDocumentReferenceIds
+    documentReferenceIds: createdDocumentReferenceIds,
+    skipped: {
+      molecularSequences: skippedMolecularSequences,
+      documentReferences: skippedDocumentReferences
+    }
   };
 });
 
