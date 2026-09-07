@@ -79,7 +79,9 @@ export function Karyotype(props) {
             styleRef.current = styleEl;
           }
 
-          // Scale karyotype to fill container width
+          // Scale karyotype to fit the container width — up (capped) when the
+          // container is wider, and DOWN when the content overflows (narrow
+          // hosts like the /my-profile card would otherwise sidescroll).
           var container = containerRef.current;
           if (container) {
             var innerWrap = document.getElementById('_ideogramInnerWrap');
@@ -90,9 +92,9 @@ export function Karyotype(props) {
               var contentWidth = innerWrap.scrollWidth;
               var containerWidth = container.clientWidth;
 
-              if (contentWidth > 0 && containerWidth > contentWidth) {
+              if (contentWidth > 0 && containerWidth > 0) {
                 var scaleX = Math.min(2.5, containerWidth / contentWidth);
-                if (scaleX > 1.05) {
+                if (scaleX < 0.98 || scaleX > 1.05) {
                   innerWrap.style.transform = 'scaleX(' + scaleX.toFixed(3) + ')';
                   innerWrap.style.transformOrigin = 'left top';
                 }
@@ -144,5 +146,7 @@ export function Karyotype(props) {
     };
   }, [isDark, sex, annotations, annotationTracks, annotationsLayout, assembly]);
 
-  return <div id='ideogram' ref={containerRef} style={{ minHeight: '600px', width: '100%' }} />;
+  // overflowX hidden: transform scale doesn't shrink LAYOUT width, so without
+  // it a scaled-down karyotype still forces a horizontal scrollbar.
+  return <div id='ideogram' ref={containerRef} style={{ minHeight: '600px', width: '100%', overflowX: 'hidden' }} />;
 }

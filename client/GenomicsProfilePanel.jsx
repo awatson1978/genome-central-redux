@@ -1,6 +1,7 @@
 // extensions/genome-central-redux/client/GenomicsProfilePanel.jsx
 //
-// Embeddable genome panel for the host's /my-profile Genomics card. Mounted
+// Embeddable genome panel for host pages — the /my-profile Genomics card and
+// @orbital/timelines' /patient-chart MolecularSequence row. Mounted
 // cross-package via Package['@orbital/genome-central'].GenomicsProfilePanel
 // (same contract as GenomicsImportPanel ↔ data-importer), so all genomics
 // logic stays in this extension.
@@ -28,6 +29,16 @@ import { resolveChromosomalSex } from '../lib/resolveChromosomalSex';
 import annotationBuilders from '../lib/buildAnnotationSets';
 
 const POLL_INTERVAL_MS = 1500;
+
+// Host-palette adoption: the /my-profile card family defines --pf-* vars, the
+// patient-chart page defines --pc-* — chain to whichever exists, with neutral
+// literals as the final fallback for any other host.
+const INK = {
+  accent: 'var(--pf-accent, var(--pc-accent, #7f6ee0))',
+  dim: 'var(--pf-ink-dim, var(--pc-n500, #8a8a8a))',
+  mid: 'var(--pf-ink-mid, var(--pc-n300, #a0a0a0))',
+  line: 'var(--pf-line, var(--pc-divider, rgba(128,128,128,0.35)))'
+};
 
 function formatCount(value) {
   const number = Number(value) || 0;
@@ -205,8 +216,8 @@ export function GenomicsProfilePanel(props) {
           id="genomicsCacheStatusChip"
           sx={{
             fontSize: 11,
-            color: loadedForPatient ? 'var(--pf-accent)' : 'var(--pf-ink-dim)',
-            border: '1px solid var(--pf-line)',
+            color: loadedForPatient ? INK.accent : INK.dim,
+            border: '1px solid ' + INK.line,
             borderRadius: '999px',
             p: '2px 10px',
             whiteSpace: 'nowrap'
@@ -215,7 +226,7 @@ export function GenomicsProfilePanel(props) {
           {statusLabel}
         </Typography>
         {loadingRun && (
-          <CircularProgress size={14} sx={{ color: 'var(--pf-ink-dim)' }} />
+          <CircularProgress size={14} sx={{ color: INK.dim }} />
         )}
         <Box sx={{ flex: 1 }} />
         {!loadingRun && canReload && !loadedForPatient && (
@@ -224,7 +235,7 @@ export function GenomicsProfilePanel(props) {
             variant="outlined"
             id="genomicsLoadCacheButton"
             onClick={handleLoad}
-            sx={{ fontSize: 11, p: '3px 8px', borderRadius: '8px', color: 'var(--pf-ink-mid)', borderColor: 'var(--pf-line)' }}
+            sx={{ fontSize: 11, p: '3px 8px', borderRadius: '8px', color: INK.mid, borderColor: INK.line }}
           >
             Load
           </Button>
@@ -236,7 +247,7 @@ export function GenomicsProfilePanel(props) {
             id="genomicsClearCacheButton"
             disabled={clearing}
             onClick={function() { setConfirmClearOpen(true); }}
-            sx={{ fontSize: 11, p: '3px 8px', borderRadius: '8px', color: 'var(--pf-ink-mid)', borderColor: 'var(--pf-line)' }}
+            sx={{ fontSize: 11, p: '3px 8px', borderRadius: '8px', color: INK.mid, borderColor: INK.line }}
           >
             {clearing ? 'Clearing…' : 'Clear'}
           </Button>
@@ -258,7 +269,7 @@ export function GenomicsProfilePanel(props) {
         assembly={assembly}
       />
       {snpCount > 0 && (
-        <Typography sx={{ fontSize: 11, color: 'var(--pf-ink-dim)', pt: '2px' }}>
+        <Typography sx={{ fontSize: 11, color: INK.dim, pt: '2px' }}>
           {formatCount(snpCount)} variant calls · {assembly || 'GRCh37'} · 23andMe genotyping array
         </Typography>
       )}
