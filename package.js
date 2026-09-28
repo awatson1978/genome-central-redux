@@ -1,8 +1,8 @@
 Package.describe({
-    name: 'awatson:genome-central-redux',
+    name: 'orbital:genome-central',
     version: '0.7.0',
     summary: 'Q4 Moonshot',
-    git: 'https://github.com/awatson/genome-central-redux',
+    git: 'https://github.com/awatson1978/genome-central',
     documentation: 'README.md'
 });
 

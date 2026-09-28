@@ -21,6 +21,8 @@ import IdeogramPage from './client/IdeogramPage';
 // avoids colliding with the `ideogram` npm library, which IdeogramComponent
 // imports as `Ideogram`); re-exported here under its public name `Ideogram`.
 import { Karyotype as Ideogram } from './client/IdeogramComponent';
+import { GenomicsImportPanel } from './client/GenomicsImportPanel';
+import { GenomicsProfilePanel } from './client/GenomicsProfilePanel';
 
 import {
   GenomeChartButtons
@@ -46,11 +48,21 @@ export {
   SidebarWorkflows,
   SidebarElements,
   DynamicRoutes,
-  Ideogram
+  Ideogram,
+  GenomicsImportPanel,
+  GenomicsProfilePanel
 };
 
+// The workflow loader assigns `module.default || module` to
+// Package['@orbital/genome-central'] — cross-package consumers reach these
+// components through this object (data-importer's genomics recognition card
+// → GenomicsImportPanel; the host /my-profile Genomics card →
+// GenomicsProfilePanel).
 export default {
   name: 'genome-central-redux',
   routes: DynamicRoutes,
-  sidebarItems: SidebarWorkflows
+  sidebarItems: SidebarWorkflows,
+  GenomicsImportPanel: GenomicsImportPanel,
+  GenomicsProfilePanel: GenomicsProfilePanel,
+  Ideogram: Ideogram
 };

@@ -342,6 +342,7 @@ function PatientChart(props){
   useEffect(function(){
     setOpenAiApiKey(Session.get('openAiApiKey'));
 
+    // rpc-migration: ddp-straggler
     Meteor.call('fetchOpenApiKeyForIps', function(error, result){
       if(result){
         setOpenAiApiKey(result)

@@ -1,16 +1,20 @@
 // packages/genome-central-redux/client/IdeogramPage.jsx
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
-  Alert, AlertTitle, Box, Card, CardHeader, CardContent, Grid,
-  ToggleButton, ToggleButtonGroup, Tooltip,
+  Alert, AlertTitle, Box, Card, CardHeader, CardContent, Collapse, Grid,
+  IconButton, ToggleButton, ToggleButtonGroup, Tooltip,
   Typography
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
+import CircleIcon from '@mui/icons-material/Circle';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { get } from 'lodash';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Session } from 'meteor/session';
 import { Karyotype } from './IdeogramComponent';
+import { GenomicsImportPanel } from './GenomicsImportPanel';
 import { resolveChromosomalSex } from '../lib/resolveChromosomalSex';
+import annotationBuilders from '../lib/buildAnnotationSets';
 let useAppTheme;
 let FhirUtilities;
 let SpecimensTable;
@@ -36,10 +40,80 @@ export function KaryotypePage() {
   const [sexOverride, setSexOverride] = useState(null);
   const [specimensPage, setSpecimensPage] = useState(0);
 
+  // Precomputed annotation tracks for the selected patient (server-side
+  // aggregates — the client never touches the 600K genotype rows).
+  const [annotationSets, setAnnotationSets] = useState(null);
+  // 'both' | 'notable' | 'density' — also the fallback path if per-annot
+  // colors misbehave in tracks layout.
+  const [trackVisibility, setTrackVisibility] = useState('both');
+
+  // Expand/collapse for the sequence-details section of the Genetic
+  // Sequence Baseline card.
+  const [baselineDetailsExpanded, setBaselineDetailsExpanded] = useState(false);
+
+  // Last-clicked ideogram annotation ({ name, chr, start, ... }) — shown in
+  // the Annotation Tracks card.
+  const [clickedAnnot, setClickedAnnot] = useState(null);
+  const handleAnnotClick = useCallback(function(annot) {
+    setClickedAnnot({
+      name: get(annot, 'name', ''),
+      chr: get(annot, 'chr', ''),
+      start: get(annot, 'start', null)
+    });
+  }, []);
+
   // Read selected patient from Session
   const patient = useTracker(function() {
     return Session.get('selectedPatient');
   }, []);
+
+  const fetchAnnotationSets = useCallback(async function() {
+    const patientFhirId = get(Session.get('selectedPatient'), 'id');
+    if (!patientFhirId) {
+      setAnnotationSets(null);
+      return;
+    }
+    try {
+      const result = await Meteor.rpc('genomics.getAnnotationSets', { patientId: patientFhirId });
+      setAnnotationSets(result);
+    } catch (error) {
+      console.warn('[IdeogramPage] getAnnotationSets failed:', error.message);
+      setAnnotationSets(null);
+    }
+  }, []);
+
+  const patientFhirId = get(patient, 'id');
+  useEffect(function() {
+    fetchAnnotationSets();
+  }, [patientFhirId, fetchAnnotationSets]);
+
+  // Merge the visible tracks into one raw-annots object for the ideogram.
+  const mergedAnnotations = useMemo(function() {
+    if (!annotationSets) {
+      return null;
+    }
+    const sets = [];
+    if (trackVisibility !== 'density' && get(annotationSets, 'notable')) {
+      sets.push(annotationSets.notable);
+    }
+    if (trackVisibility !== 'notable' && get(annotationSets, 'density')) {
+      sets.push(annotationSets.density);
+    }
+    return annotationBuilders.mergeAnnotationSets(sets);
+  }, [annotationSets, trackVisibility]);
+
+  const annotationTracks = useMemo(function() {
+    return [
+      { id: 'notableTrack', displayName: 'Clinically notable markers', color: annotationBuilders.NOTABLE_COLOR, shape: 'triangle' },
+      { id: 'densityTrack', displayName: 'SNP density (5Mb bins)', color: annotationBuilders.DENSITY_COLOR, shape: 'rect' }
+    ];
+  }, []);
+
+  // Positions in the imported 23andMe v4 data are GRCh37; only pin the
+  // assembly when we actually have annotations to place.
+  const annotationAssembly = mergedAnnotations
+    ? get(annotationSets, 'notable.assembly', get(annotationSets, 'density.assembly', 'GRCh37'))
+    : null;
 
   // Resolve chromosomal sex from patient data
   const resolvedSex = useMemo(function() {
@@ -59,9 +133,20 @@ export function KaryotypePage() {
     }
   }
 
-  // Fetch first MolecularSequence (no patient filter for now)
+  // Fetch the selected patient's MolecularSequence, falling back to any DNA
+  // sequence when no patient-scoped record exists.
   const sequenceBaseline = useTracker(function() {
     if (MolecularSequences) {
+      const fhirId = get(Session.get('selectedPatient'), 'id');
+      if (fhirId) {
+        const patientSequence = MolecularSequences.findOne({
+          type: 'dna',
+          'patient.reference': 'Patient/' + fhirId
+        });
+        if (patientSequence) {
+          return patientSequence;
+        }
+      }
       return MolecularSequences.findOne({ type: 'dna' });
     }
     return null;
@@ -85,30 +170,7 @@ export function KaryotypePage() {
       <Grid container spacing={2}>
         <Grid item xs={12} md={3} sx={{ display: 'flex' }}>
           <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', gap: 2 }}>
-            <Card sx={{
-              bgcolor: 'background.paper',
-              color: 'text.primary'
-            }}>
-              <CardHeader title="Genetic Sequence Baseline" />
-              <CardContent>
-                {sequenceBaseline ? (
-                  <Alert severity="info">
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      {get(sequenceBaseline, 'type', 'Unknown').toUpperCase()} Sequence
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {get(sequenceBaseline, 'referenceSeq.referenceSeqId.text',
-                        get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.display', 'No reference sequence'))}
-                    </Typography>
-                  </Alert>
-                ) : (
-                  <Alert severity="info">
-                    <AlertTitle>No sequence baseline</AlertTitle>
-                    Import a MolecularSequence resource to establish a genetic baseline for comparison.
-                  </Alert>
-                )}
-              </CardContent>
-            </Card>
+            <GenomicsImportPanel onImportComplete={fetchAnnotationSets} />
             <Card sx={{
               flex: 1,
               display: 'flex',
@@ -147,59 +209,89 @@ export function KaryotypePage() {
             </Card>
           </Box>
         </Grid>
-        <Grid item xs={12} md={4} sx={{ display: 'flex' }}>
+        <Grid item xs={12} md={3} sx={{ display: 'flex' }}>
           <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', gap: 2 }}>
             <Card sx={{
               bgcolor: 'background.paper',
               color: 'text.primary'
             }}>
-              <CardHeader title="Sequence Detail" />
+              <CardHeader
+                title="Genetic Sequence Baseline"
+                action={sequenceBaseline ? (
+                  <IconButton
+                    id="baselineDetailsToggle"
+                    size="small"
+                    aria-label={baselineDetailsExpanded ? 'Hide sequence details' : 'Show sequence details'}
+                    onClick={function() { setBaselineDetailsExpanded(!baselineDetailsExpanded); }}
+                    sx={{
+                      transform: baselineDetailsExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                      transition: 'transform 0.2s'
+                    }}
+                  >
+                    <ExpandMoreIcon />
+                  </IconButton>
+                ) : null}
+              />
               <CardContent>
                 {sequenceBaseline ? (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Type</Typography>
-                      <Typography variant="body2">{get(sequenceBaseline, 'type', 'Unknown').toUpperCase()}</Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Coordinate System</Typography>
-                      <Typography variant="body2">{get(sequenceBaseline, 'coordinateSystem', 'N/A')}</Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Reference Sequence ID</Typography>
-                      <Typography variant="body2">
-                        {get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.code',
-                          get(sequenceBaseline, 'referenceSeq.referenceSeqId.text', 'N/A'))}
+                  <Box>
+                    <Alert severity="info">
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {get(sequenceBaseline, 'type', 'Unknown').toUpperCase()} Sequence
                       </Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Reference Sequence</Typography>
-                      <Typography variant="body2">
+                      <Typography variant="caption" color="text.secondary">
                         {get(sequenceBaseline, 'referenceSeq.referenceSeqId.text',
-                          get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.display', 'N/A'))}
+                          get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.display', 'No reference sequence'))}
                       </Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Read Coverage</Typography>
-                      <Typography variant="body2">{get(sequenceBaseline, 'readCoverage', 'N/A')}</Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Patient Reference</Typography>
-                      <Typography variant="body2">{get(sequenceBaseline, 'patient.reference', 'N/A')}</Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Specimen Reference</Typography>
-                      <Typography variant="body2">{get(sequenceBaseline, 'specimen.reference', 'N/A')}</Typography>
-                    </Box>
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">Device Reference</Typography>
-                      <Typography variant="body2">{get(sequenceBaseline, 'device.reference', 'N/A')}</Typography>
-                    </Box>
+                    </Alert>
+                    <Collapse in={baselineDetailsExpanded}>
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mt: 2 }}>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Type</Typography>
+                          <Typography variant="body2">{get(sequenceBaseline, 'type', 'Unknown').toUpperCase()}</Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Coordinate System</Typography>
+                          <Typography variant="body2">{get(sequenceBaseline, 'coordinateSystem', 'N/A')}</Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Reference Sequence ID</Typography>
+                          <Typography variant="body2">
+                            {get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.code',
+                              get(sequenceBaseline, 'referenceSeq.referenceSeqId.text', 'N/A'))}
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Reference Sequence</Typography>
+                          <Typography variant="body2">
+                            {get(sequenceBaseline, 'referenceSeq.referenceSeqId.text',
+                              get(sequenceBaseline, 'referenceSeq.referenceSeqId.coding.0.display', 'N/A'))}
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Read Coverage</Typography>
+                          <Typography variant="body2">{get(sequenceBaseline, 'readCoverage', 'N/A')}</Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Patient Reference</Typography>
+                          <Typography variant="body2">{get(sequenceBaseline, 'patient.reference', 'N/A')}</Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Specimen Reference</Typography>
+                          <Typography variant="body2">{get(sequenceBaseline, 'specimen.reference', 'N/A')}</Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">Device Reference</Typography>
+                          <Typography variant="body2">{get(sequenceBaseline, 'device.reference', 'N/A')}</Typography>
+                        </Box>
+                      </Box>
+                    </Collapse>
                   </Box>
                 ) : (
-                  <Typography variant="body2" color="text.secondary">
-                    No MolecularSequence data available.
-                  </Typography>
+                  <Alert severity="info">
+                    <AlertTitle>No sequence baseline</AlertTitle>
+                    Import a MolecularSequence resource to establish a genetic baseline for comparison.
+                  </Alert>
                 )}
               </CardContent>
             </Card>
@@ -263,7 +355,8 @@ export function KaryotypePage() {
             </Card>
           </Box>
         </Grid>
-        <Grid item xs={12} md={5}>
+        <Grid item xs={12} md={6}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <Card sx={{
             bgcolor: 'background.paper',
             color: 'text.primary'
@@ -309,9 +402,95 @@ export function KaryotypePage() {
               }
             />
             <CardContent sx={{ bgcolor: 'background.paper', minHeight: '600px' }}>
-              <Karyotype isDark={isDark} sex={effectiveSex} />
+              <Karyotype
+                isDark={isDark}
+                sex={effectiveSex}
+                annotations={mergedAnnotations}
+                annotationTracks={annotationTracks}
+                assembly={annotationAssembly}
+                onAnnotClick={handleAnnotClick}
+              />
             </CardContent>
           </Card>
+          {annotationSets && (get(annotationSets, 'notable') || get(annotationSets, 'density')) && (
+            <Card sx={{ bgcolor: 'background.paper', color: 'text.primary' }}>
+              <CardHeader
+                title="Annotation Tracks"
+                action={
+                  <ToggleButtonGroup
+                    value={trackVisibility}
+                    exclusive
+                    size="small"
+                    onChange={function(event, newValue) {
+                      if (newValue) {
+                        setTrackVisibility(newValue);
+                      }
+                    }}
+                    sx={{
+                      '& .MuiToggleButton-root': {
+                        color: 'text.secondary',
+                        borderColor: 'divider',
+                        textTransform: 'none',
+                        px: 1.5,
+                        py: 0.25,
+                        fontSize: '0.75rem'
+                      }
+                    }}
+                  >
+                    <ToggleButton value="both">Both</ToggleButton>
+                    <ToggleButton value="notable">Markers</ToggleButton>
+                    <ToggleButton value="density">Density</ToggleButton>
+                  </ToggleButtonGroup>
+                }
+              />
+              <CardContent>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <CircleIcon sx={{ fontSize: 12, color: annotationBuilders.NOTABLE_COLOR }} />
+                    <Typography variant="body2">
+                      Clinically notable markers
+                      {get(annotationSets, 'notable.totals.notableCount') !== undefined
+                        ? ' (' + get(annotationSets, 'notable.totals.notableCount') + ')' : ''}
+                    </Typography>
+                  </Box>
+                  {get(annotationSets, 'reportAnnotsAdded', 0) > 0 && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <CircleIcon sx={{ fontSize: 12, color: '#f57c00' }} />
+                      <Typography variant="body2">
+                        Report-derived variants ({get(annotationSets, 'reportAnnotsAdded')})
+                      </Typography>
+                    </Box>
+                  )}
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <CircleIcon sx={{ fontSize: 12, color: annotationBuilders.DENSITY_COLOR }} />
+                    <Typography variant="body2">
+                      SNP density, 5Mb bins
+                      {get(annotationSets, 'density.totals.snpCount') !== undefined
+                        ? ' (' + Number(get(annotationSets, 'density.totals.snpCount')).toLocaleString() + ' SNPs)' : ''}
+                    </Typography>
+                  </Box>
+                  {clickedAnnot && (
+                    <Alert severity="info" sx={{ mt: 1 }} onClose={function() { setClickedAnnot(null); }}>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {clickedAnnot.name}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        chr{clickedAnnot.chr}
+                        {clickedAnnot.start !== null
+                          ? ' · ' + Number(clickedAnnot.start).toLocaleString() + ' bp'
+                          : ''}
+                      </Typography>
+                    </Alert>
+                  )}
+                  <Typography variant="caption" color="text.secondary">
+                    Assembly {annotationAssembly || 'GRCh38 (default)'} · positions from the
+                    imported genotype file
+                  </Typography>
+                </Box>
+              </CardContent>
+            </Card>
+          )}
+          </Box>
         </Grid>
       </Grid>
     </Box>

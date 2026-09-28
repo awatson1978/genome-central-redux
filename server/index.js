@@ -6,6 +6,8 @@
 // namespace-import it (Package registry).
 
 import '../lib/collections.js';
+import '../lib/GenomicsCollections.js';
 import './methods.js';
+import './methods.genomics.js';
 
 console.log('[genome-central-redux] Server methods registered');
