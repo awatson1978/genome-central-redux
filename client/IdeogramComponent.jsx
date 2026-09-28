@@ -27,6 +27,9 @@ export function Karyotype(props) {
   var annotationTracks = props.annotationTracks || null;
   var annotationsLayout = props.annotationsLayout || 'tracks';
   var assembly = props.assembly || null;
+  // Arrange chromosomes into N rows (ideogram's `rows` config) — narrow hosts
+  // like the Chronicle panel use 2 so the karyotype fits without heavy shrinking.
+  var rows = props.rows || null;
   var ideogramRef = useRef(null);
   var styleRef = useRef(null);
   var containerRef = useRef(null);
@@ -42,11 +45,70 @@ export function Karyotype(props) {
   useEffect(function() {
     var cancelled = false;
     var rafId = null;
+    var resizeObserver = null;
+    var fitRafId = null;
 
     // Remove any previously injected style
     if (styleRef.current) {
       styleRef.current.remove();
       styleRef.current = null;
+    }
+
+    // Scale the karyotype to the container — DOWN uniformly when the content
+    // overflows (narrow hosts like the Chronicle Genomics panel or the
+    // /my-profile card), and up on X only (capped) to spread spacing in wide
+    // hosts. Runs on load AND from a ResizeObserver, because a one-shot
+    // measurement at onLoad can catch the host mid-flex-layout and fit to a
+    // stale width.
+    function fitKaryotype() {
+      var container = containerRef.current;
+      if (!container) { return; }
+      var innerWrap = container.querySelector('#_ideogramInnerWrap');
+      var middleWrap = container.querySelector('#_ideogramMiddleWrap');
+      if (!innerWrap) { return; }
+
+      innerWrap.style.maxWidth = 'none';
+      innerWrap.style.position = 'relative';
+      // Force single-line layout so scrollWidth reports the true karyotype
+      // width even when the host is narrower than the content.
+      innerWrap.style.width = 'max-content';
+      innerWrap.style.whiteSpace = 'nowrap';
+
+      var contentWidth = innerWrap.scrollWidth;
+      var containerWidth = container.clientWidth;
+      if (contentWidth <= 0 || containerWidth <= 0) { return; }
+
+      var scale = Math.min(2.5, containerWidth / contentWidth);
+      if (scale < 0.98) {
+        // Shrink UNIFORMLY — scaleX-only here squishes the chromosomes
+        // into each other.
+        innerWrap.style.transform = 'scale(' + scale.toFixed(3) + ')';
+        innerWrap.style.transformOrigin = 'left top';
+      } else if (scale > 1.05) {
+        // Grow on X only — spreads chromosome spacing to fill wide hosts
+        // without ballooning the height.
+        innerWrap.style.transform = 'scaleX(' + scale.toFixed(3) + ')';
+        innerWrap.style.transformOrigin = 'left top';
+      } else {
+        innerWrap.style.transform = '';
+      }
+
+      // A transform doesn't shrink LAYOUT height — reclaim the dead space so
+      // the host doesn't reserve/scroll the karyotype's unscaled height.
+      if (middleWrap) {
+        var rect = innerWrap.getBoundingClientRect();
+        if (rect.height > 0) {
+          middleWrap.style.height = Math.ceil(rect.height) + 'px';
+        }
+      }
+    }
+
+    function scheduleFit() {
+      if (fitRafId) { cancelAnimationFrame(fitRafId); }
+      fitRafId = requestAnimationFrame(function() {
+        fitRafId = null;
+        fitKaryotype();
+      });
     }
 
     // The ideogram library resolves its container with
@@ -71,6 +133,7 @@ export function Karyotype(props) {
         sex: sex,
         container: '#ideogram',
         onLoad: function() {
+          if (cancelled) { return; }
           if (isDark) {
             var styleEl = document.createElement('style');
             styleEl.setAttribute('data-ideogram-dark', 'true');
@@ -79,27 +142,14 @@ export function Karyotype(props) {
             styleRef.current = styleEl;
           }
 
-          // Scale karyotype to fit the container width — up (capped) when the
-          // container is wider, and DOWN when the content overflows (narrow
-          // hosts like the /my-profile card would otherwise sidescroll).
-          var container = containerRef.current;
-          if (container) {
-            var innerWrap = document.getElementById('_ideogramInnerWrap');
-            if (innerWrap) {
-              innerWrap.style.maxWidth = 'none';
-              innerWrap.style.position = 'relative';
+          fitKaryotype();
 
-              var contentWidth = innerWrap.scrollWidth;
-              var containerWidth = container.clientWidth;
-
-              if (contentWidth > 0 && containerWidth > 0) {
-                var scaleX = Math.min(2.5, containerWidth / contentWidth);
-                if (scaleX < 0.98 || scaleX > 1.05) {
-                  innerWrap.style.transform = 'scaleX(' + scaleX.toFixed(3) + ')';
-                  innerWrap.style.transformOrigin = 'left top';
-                }
-              }
-            }
+          // Re-fit as the host settles/changes size (flex layout finishing,
+          // panel toggles, window resizes). rAF-coalesced to avoid observer
+          // feedback loops.
+          if (typeof ResizeObserver !== 'undefined' && containerRef.current && !resizeObserver) {
+            resizeObserver = new ResizeObserver(scheduleFit);
+            resizeObserver.observe(containerRef.current);
           }
         },
         onLoadError: function(error) {
@@ -109,6 +159,9 @@ export function Karyotype(props) {
 
       if (assembly) {
         config.assembly = assembly;
+      }
+      if (rows) {
+        config.rows = rows;
       }
       if (annotations && Array.isArray(annotations.annots) && annotations.annots.length > 0) {
         config.annotations = annotations;
@@ -134,6 +187,13 @@ export function Karyotype(props) {
       if (rafId) {
         cancelAnimationFrame(rafId);
       }
+      if (fitRafId) {
+        cancelAnimationFrame(fitRafId);
+      }
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+        resizeObserver = null;
+      }
       var container = document.querySelector('#ideogram');
       if (container) {
         container.replaceChildren();
@@ -144,9 +204,12 @@ export function Karyotype(props) {
         styleRef.current = null;
       }
     };
-  }, [isDark, sex, annotations, annotationTracks, annotationsLayout, assembly]);
+  }, [isDark, sex, annotations, annotationTracks, annotationsLayout, assembly, rows]);
 
   // overflowX hidden: transform scale doesn't shrink LAYOUT width, so without
   // it a scaled-down karyotype still forces a horizontal scrollbar.
-  return <div id='ideogram' ref={containerRef} style={{ minHeight: '600px', width: '100%', overflowX: 'hidden' }} />;
+  // minHeight is a loading placeholder (prevents layout jump); hosts with a
+  // small fixed region (Chronicle Genomics panel) pass a smaller value.
+  var minHeight = props.minHeight != null ? props.minHeight : 600;
+  return <div id='ideogram' ref={containerRef} style={{ minHeight: minHeight + 'px', width: '100%', overflowX: 'hidden' }} />;
 }
